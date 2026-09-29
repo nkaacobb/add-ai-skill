@@ -1,45 +1,16 @@
-# Hello World — the AI Agent Drawer pattern, as a reusable skill
+# add-ai-skill — the AI Agent Drawer pattern, as a reusable skill
 
-This folder packages PortScope's AI agent pattern so any app can have it, and so Claude Code, Codex and GitHub
-Copilot can build it into an app on request:
+This repository packages an AI agent pattern so any app can have it, and so Claude Code, Codex and GitHub Copilot can
+build it into an app on request:
 
 > **Application X has an AI agent that slides out from the right, sees what is on the current screen
 > (plus what the app and the page are for), answers in rich Markdown, and can use any LLM — LM Studio by default.**
 
-It contains three things:
-
 | | |
 | --- | --- |
-| **The skill** — [`ai-agent-drawer/`](ai-agent-drawer/) | Instructions ([`SKILL.md`](ai-agent-drawer/SKILL.md)) plus everything an AI coding agent needs to build the pattern into an app: the runtime, relays, references, and tests. |
-| **The Hello World app** — [`ai-agent-drawer/examples/hello-world/`](ai-agent-drawer/examples/hello-world/) | A small text editor (type, or open a file) with the agent built in. The reference integration. |
+| **The skill** — [`add-ai-skill/`](add-ai-skill/) | Instructions ([`SKILL.md`](add-ai-skill/SKILL.md) + [`references/`](add-ai-skill/references/)) plus everything a coding agent needs to build the pattern into an app: the runtime, the relays, verification tooling, and tests. |
+| **The Hello World app** — [`add-ai-skill/examples/hello-world/`](add-ai-skill/examples/hello-world/) | A small text editor with the agent built in. The reference integration. |
 | **The installer** — [`install-skill.ps1`](install-skill.ps1) / [`install-skill.sh`](install-skill.sh) | Copies the skill to the user-wide skill folders so it is available in every project. |
-
-## Run the Hello World app
-
-1. Start **LM Studio**: Developer tab → *Start server* (this template expects `http://127.0.0.1:9000`; change it in
-   Settings if yours uses 1234), turn on **Enable CORS**, and load a model.
-2. From this `hello-world` folder:
-
-   ```powershell
-   node ai-agent-drawer/assets/relay/relay.mjs --static .
-   ```
-
-3. Open <http://127.0.0.1:8787/>. (Any static server works too; this one also provides the optional relay at
-   `/ai-relay`.)
-
-Then try it:
-
-- Click **Ask AI** (or press `Ctrl+I`) and ask "Proofread this". Your message shows **Read the page · Editor · N chars · hash**,
-  and the status bar flag turns green: *AI has the latest page*.
-- Type something in the editor. The flag turns amber (*Page changed*) and shows the new hash.
-- Ask again. The page is re-read (new hash). Ask once more without editing: **Page unchanged**, and the document is
-  not sent again.
-- **Open file…** or drag a text file onto the editor. The agent sees the new document.
-- Click the flag (or the eye icon in the drawer) to open **Settings → Context**. It shows exactly what the AI
-  receives: the app context, the page context, the view state (cursor/selection), the snapshot, and the full
-  system prompt.
-- The gear opens **Settings → Model** (provider, address, model, key, Test connection) and **Settings → Agent**
-  (system prompt, temperature, reply length, thinking, memory, screen sharing).
 
 ## Install the skill for Claude Code, Codex and Copilot
 
@@ -47,31 +18,48 @@ Then try it:
 .\install-skill.ps1            # or: ./install-skill.sh on macOS/Linux/Git Bash
 ```
 
-This copies `ai-agent-drawer/` to:
+This copies `add-ai-skill/` to:
 
 | Folder | Read by |
 | --- | --- |
-| `~/.claude/skills/ai-agent-drawer` | Claude Code, GitHub Copilot |
-| `~/.agents/skills/ai-agent-drawer` | Codex, GitHub Copilot |
+| `~/.claude/skills/add-ai-skill` | Claude Code |
+| `~/.agents/skills/add-ai-skill` | Codex, GitHub Copilot |
 
-Re-run the installer whenever you change the skill. `-Uninstall` removes it.
+**This repository is the source of truth.** Edit the skill here, then re-run the installer to update the installed
+copies (it also removes copies installed under the old name `ai-agent-drawer`). `-Uninstall` removes them;
+`-Targets claude` installs for one tool only.
 
 ## Use it in another app
 
-Open the app in VS Code and ask your agent:
+Open the app and ask your agent:
 
-- **Claude Code** — "Use the ai-agent-drawer skill to build an AI agent into this app", or `/ai-agent-drawer`
-- **Codex** — `$ai-agent-drawer build an AI agent into this app`
-- **GitHub Copilot** (agent mode) — `/ai-agent-drawer build an AI agent into this app`
+- **Claude Code** — "Use the add-ai-skill skill to build an AI agent into this app", or `/add-ai-skill`
+- **Codex** — `$add-ai-skill build an AI agent into this app`
+- **GitHub Copilot** (agent mode) — `/add-ai-skill build an AI agent into this app`
 
-The skill tells the agent to:
-1. Survey the app, then propose a context plan: the app's purpose and limits, and what each page shows.
-2. Copy the runtime in.
-3. Mount one agent, wire `setPage` / `content` / `view` for every page, and call `contextChanged()` wherever data changes.
-4. Optionally add app-specific buttons (for example "Insert into editor"), and a relay for deployed apps.
-5. Verify in a browser.
+The skill tells the agent to survey the app (including its production stack, keyboard shortcuts, modal dialogs and
+layout), propose a context plan, copy the runtime in, mount one agent, wire `setPage` / `content` / `view` for every
+page, signal changes, fit the host app, optionally add actions and a relay, and verify with `scripts/verify.mjs`.
+You can steer it, e.g. "…and put the Ask AI button next to the search box" or "…use the PHP relay in public mode".
 
-You can steer it, e.g. "…and put the Ask AI button next to the search box" or "…use the PHP relay with server keys".
+## Run the Hello World app
+
+1. Start **LM Studio**: Developer tab → *Start server* (the template expects `http://127.0.0.1:9000`; change it in
+   Settings if yours uses 1234), turn on **Enable CORS**, and load a model (with at least 8k context).
+2. From this repository's root:
+
+   ```powershell
+   node add-ai-skill/assets/relay/relay.mjs --static .
+   ```
+
+3. Open <http://127.0.0.1:8787/>. (Any static server works too; this one also provides the optional relay at
+   `/ai-relay`.)
+
+Then try it: click **Ask AI** (or `Ctrl+I`) and ask "Proofread this" — your message shows **Read the page · Editor ·
+N chars · hash** and the status bar flag turns green. Edit the text: the flag turns amber. Ask again: the page is
+re-read; ask once more without editing: **Page unchanged**. Ask "make the text bigger": the agent answers with an
+editor-settings block and an **Apply editor settings** button. Click the flag to see exactly what the AI receives
+(Settings → Context, including the estimated token size).
 
 ## How it works (short version)
 
@@ -85,33 +73,50 @@ You can steer it, e.g. "…and put the Ask AI button next to the search box" or 
 Before each question, the runtime hashes the screen content and compares it with the newest snapshot the model
 already has in the conversation. If they match, it sends only the question. If not, it attaches a fresh snapshot.
 That result drives the flag: green = in sync, amber = changed, blue = not read yet. Details:
-[`references/context-sync.md`](ai-agent-drawer/references/context-sync.md).
+[`references/context-sync.md`](add-ai-skill/references/context-sync.md).
 
 ## What's inside the skill
 
 ```
-ai-agent-drawer/
-  SKILL.md                 instructions the coding agent follows
+add-ai-skill/
+  SKILL.md                 instructions the coding agent follows (keep it concise: it is loaded into the agent's context)
+  CHANGELOG.md             what changed per version, with upgrade notes for apps
   agents/openai.yaml       Codex display metadata
-  assets/ai-agent/         the runtime (copied into apps): ai-agent.js · ai-agent.css · ai-agent.d.ts
-    core/                  context, sync protocol, hashing, prompt, settings, providers, client, transport
+  assets/ai-agent/         the runtime (copied into apps unchanged): ai-agent.js · ai-agent.css · ai-agent.d.ts
+    core/                  context, sync protocol, hashing, prompt, settings, providers, client, transport, relay probe, block values
     adapters/              openai-chat (LM Studio/Ollama/OpenAI/DeepSeek/OpenRouter/custom), anthropic, gemini, relay
-    ui/                    drawer, settings modal, markdown renderer, resize handle
-  assets/relay/            relay.php (XAMPP/PHP) and relay.mjs (Node, also a static server)
-  examples/hello-world/    this demo
+    ui/                    drawer, settings modal, markdown, resize, dialog docking, layout check
+  assets/relay/            relay.php (PHP 8.1+) · relay.mjs (Node) · relay.config.example.php — copied unchanged, configured by a file
+  examples/hello-world/    the demo: app.js (the editor) · ai-agent-setup.js (the integration) · content.js (pure, tested)
   references/              api · context-sync · frameworks · providers · checklist · architecture
-  tests/                   node --test  (27 unit tests)
-  package.json             npm run demo · npm test
+  scripts/verify.mjs       checks an integration in headless Edge/Chrome (scripts/lib/cdp.mjs is its driver)
+  tests/                   node --test: runtime · relays (Node + PHP) · real browser · example
+  package.json             npm test · npm run demo · npm run verify
 ```
 
-It is built from two apps you already have:
-- **PortScope** (this repo): the drawer, streaming chat, Markdown renderer, saved chats, settings modal, and PHP proxy.
-- **Rolling World** (`games/roll-world/src/ai`): the provider catalog, protocol adapters, transport and error handling, settings validation, and the connection test.
+## Changing the skill
 
-The context layers, the hash sync with its flag and per-message receipts, the editable system prompt, and the Context inspector are new.
+```powershell
+cd add-ai-skill
+node --test                                    # all suites; no model needed
+node assets/relay/relay.mjs --static .         # Hello World at http://127.0.0.1:8787/examples/hello-world/
+node scripts/verify.mjs http://127.0.0.1:8787/examples/hello-world/ --no-llm
+```
 
-## Changing the pattern
+- The relay tests also run the PHP relay when `php` (with curl) is on the PATH, or `PHP_BIN` points at it
+  (e.g. `$env:PHP_BIN = 'D:\xampp\php\php.exe'`).
+- The browser tests need Node 22+ and Edge/Chrome/Chromium (`AIA_BROWSER` to choose one; `AIA_SKIP_BROWSER=1` to skip).
+- With LM Studio running, `verify.mjs` without `--no-llm` also runs the read → change → re-read → "Page unchanged" loop.
 
-Edit the files under `ai-agent-drawer/`, run `node --test` inside it, try the Hello World app, then re-run the
-installer. Apps that already have a copy of `ai-agent/` can take the update by copying the folder over theirs.
-Integrations only use the options and methods, so the copy can be replaced wholesale.
+When an integration needed a workaround, fold the lesson back in here so the next one does not:
+
+1. Reproduce it in a test first; check browser/server behaviour for real before encoding it.
+2. Keep changes additive and generic (no app names, domains or server paths); anything that could surprise an
+   existing app is opt-in or has a safe default. No dependencies, no build step.
+3. Update `ai-agent.d.ts`, `references/api.md` and other affected references, `SKILL.md` if the workflow changes,
+   Hello World if it demonstrates the feature, and `CHANGELOG.md`; bump the version (`VERSION` in `ai-agent.js`, the
+   relay versions, `package.json`).
+4. Run the tests, try Hello World, commit, and re-run the installer.
+
+Apps that already have a copy of `ai-agent/` take an update by copying the folder over theirs (see the upgrade notes
+in `CHANGELOG.md`); integrations only use the options and methods, so the copy can be replaced wholesale.

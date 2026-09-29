@@ -1,0 +1,9 @@
+# Local relay configuration (may hold API keys) and relay runtime state
+relay.config.php
+relay.config.json
+relay.config.mjs
+relay-limits.json
+
+# Verification output, dependencies
+.verify/
+node_modules/
