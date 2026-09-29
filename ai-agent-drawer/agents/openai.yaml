@@ -1,0 +1,6 @@
+interface:
+  display_name: "AI Agent Drawer"
+  short_description: "Build a screen-aware AI chat drawer (any LLM, LM Studio default) into a web app"
+  default_prompt: "Use $ai-agent-drawer to build an AI agent into this application: a right-hand chat drawer that sees the current page, with settings for the model and system prompt."
+policy:
+  allow_implicit_invocation: true
