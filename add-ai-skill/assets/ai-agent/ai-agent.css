@@ -449,6 +449,44 @@ body.aia-resizing, body.aia-resizing * { cursor: col-resize !important; user-sel
   border-top: 1px dashed var(--aia-border);
 }
 
+/* Tool calls in a reply: one chip per call, with a card when the user must decide. */
+.aia-tool-log { display: flex; flex-direction: column; gap: 5px; margin-bottom: 9px; }
+.aia-tool { border: 1px solid var(--aia-border); border-radius: var(--aia-radius-sm); background: var(--aia-bg-elevated); font-size: 12px; }
+.aia-tool-line { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 9px; }
+.aia-tool-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--aia-text-faint); }
+.aia-tool-title { flex: 0 0 auto; font-weight: 600; }
+.aia-tool-call { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--aia-mono); font-size: 11px; color: var(--aia-text-muted); }
+.aia-tool-state { flex: 0 0 auto; font-size: 11px; color: var(--aia-text-muted); }
+.aia-tool[data-status="running"] .aia-tool-dot, .aia-tool[data-status="waiting"] .aia-tool-dot { background: var(--aia-accent); animation: aia-pulse 1.1s ease-in-out infinite; }
+.aia-tool[data-status="waiting"] { border-color: color-mix(in srgb, var(--aia-accent) 50%, var(--aia-border)); }
+.aia-tool[data-status="ok"] .aia-tool-dot { background: var(--aia-ok); }
+.aia-tool[data-status="ok"] .aia-tool-state { color: var(--aia-ok); }
+.aia-tool[data-status="error"] .aia-tool-dot { background: var(--aia-danger); }
+.aia-tool[data-status="error"] .aia-tool-state { color: var(--aia-danger); }
+.aia-tool[data-status="declined"] .aia-tool-dot, .aia-tool[data-status="off"] .aia-tool-dot, .aia-tool[data-status="skipped"] .aia-tool-dot { background: var(--aia-warn); }
+.aia-tool-card { padding: 2px 9px 9px; }
+.aia-tool-card p { margin: 0 0 8px; font-size: 12.5px; }
+.aia-tool-reason { color: var(--aia-text-muted); font-style: italic; }
+.aia-tool-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Settings > Tools */
+.aia-tool-list { display: flex; flex-direction: column; gap: 12px; }
+.aia-tool-group h4 { margin: 0 0 6px; font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--aia-text-muted); }
+.aia-tool-row { display: flex; align-items: flex-start; gap: 9px; padding: 7px 8px; border: 1px solid var(--aia-border); border-radius: var(--aia-radius-sm); background: var(--aia-bg-elevated); cursor: pointer; }
+.aia-tool-row + .aia-tool-row { margin-top: 5px; }
+.aia-tool-row input { margin: 3px 0 0; width: 15px; height: 15px; flex: 0 0 auto; accent-color: var(--aia-accent); }
+.aia-tool-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
+.aia-tool-name { font-size: 13px; font-weight: 600; }
+.aia-tool-name code { font-family: var(--aia-mono); font-size: 10.5px; font-weight: 400; color: var(--aia-text-muted); }
+.aia-tool-desc { font-size: 11.5px; color: var(--aia-text-muted); }
+.aia-tool-tags { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: 0 0 auto; }
+.aia-badge { padding: 1px 7px; font-size: 10px; font-weight: 650; border-radius: 999px; border: 1px solid var(--aia-border); color: var(--aia-text-muted); white-space: nowrap; }
+.aia-badge-read { color: var(--aia-ok); border-color: color-mix(in srgb, var(--aia-ok) 40%, var(--aia-border)); }
+.aia-badge-write { color: var(--aia-warn); border-color: color-mix(in srgb, var(--aia-warn) 40%, var(--aia-border)); }
+.aia-badge-destructive { color: var(--aia-danger); border-color: color-mix(in srgb, var(--aia-danger) 45%, var(--aia-border)); }
+.aia-badge-here { color: var(--aia-accent-strong); border-color: color-mix(in srgb, var(--aia-accent) 40%, var(--aia-border)); }
+.aia-ctx-warn .aia-warn-note, .aia-warn-note { padding: 7px 10px; color: var(--aia-text); background: var(--aia-warn-soft); border: 1px solid color-mix(in srgb, var(--aia-warn) 34%, var(--aia-border)); border-left: 3px solid var(--aia-warn); border-radius: var(--aia-radius-sm); }
+
 .aia-msg-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; padding-top: 7px; border-top: 1px solid color-mix(in srgb, var(--aia-border) 70%, transparent); }
 .aia-msg-action {
   padding: 3px 10px;

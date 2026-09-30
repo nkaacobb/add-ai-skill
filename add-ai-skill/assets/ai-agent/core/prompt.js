@@ -27,14 +27,16 @@ export const FORMAT_RULES = `Formatting: reply in GitHub-flavored Markdown — h
  * @param {string} o.appText   ContextManager.appText()
  * @param {string} o.pageText  ContextManager.pageText()
  * @param {boolean} o.share    whether screen content is shared at all
+ * @param {string} [o.toolsText]  the TOOLS section (core/tools.js buildToolPrompt), when the app has tools
  */
-export function buildSystemPrompt({ base, appText = '', pageText = '', share = true }) {
+export function buildSystemPrompt({ base, appText = '', pageText = '', share = true, toolsText = '' }) {
   const sections = [String(base || DEFAULT_SYSTEM_PROMPT).trim()];
   if (appText.trim()) sections.push(`== APPLICATION ==\n${appText.trim()}`);
   if (pageText.trim()) sections.push(`== CURRENT PAGE ==\n${pageText.trim()}`);
   sections.push(share
     ? SCREEN_PROTOCOL
     : 'Screen content protocol: the user has switched off sharing the screen content with you. You know which page is open (above) but not what it contains; ask the user to paste what you need.');
+  if (toolsText.trim()) sections.push(toolsText.trim());
   sections.push(FORMAT_RULES);
   return sections.join('\n\n');
 }

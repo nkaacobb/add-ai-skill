@@ -14,6 +14,10 @@
 //          ignored; same-origin enforced (X-Requested-With, Origin, Sec-Fetch-Site; no CORS headers); per-visitor
 //          and site-wide rate limits; body/message/token caps; generic errors for visitors.
 //
+// Tools (1.2): the request may carry `tools` and `toolTurns` (neutral formats, ../ai-agent/core/tools.js); the relay
+// passes them to the provider and streams the model's calls back as `tool_call` events. Tools run in the browser.
+// A public relay counts one question per chain of tool steps (`turnId`), up to limits.maxToolSteps.
+//
 // Configuration (optional): the first of --config <file>, $AIA_RELAY_CONFIG, $AIA_RELAY_DIR/relay.config.{mjs,json},
 // relay.config.{mjs,json} next to this file. A .json file or an .mjs module with `export default { … }`, using the
 // keys of relay.config.example.php. The static server never serves files named relay.config.*.
@@ -35,7 +39,7 @@ import { streamChat, listModels } from '../ai-agent/core/client.js';
 import { PROVIDERS, provider, isLocalUrl } from '../ai-agent/core/providers.js';
 import { sanitizeSettings } from '../ai-agent/core/settings.js';
 
-export const RELAY_VERSION = '1.1.0';
+export const RELAY_VERSION = '1.2.0';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /** A refusal with its HTTP status and the drawer's error code; `detail` only reaches requests from this computer. */
@@ -75,6 +79,8 @@ export function configDefaults(mode = 'local') {
       maxBodyBytes: pub ? 512 * 1024 : 4 * 1024 * 1024,
       maxMessages: pub ? 40 : 400,
       maxOutputTokens: pub ? 4096 : 64000,
+      maxTools: 64,
+      maxToolSteps: pub ? 10 : 30,
     },
   };
 }
@@ -214,14 +220,21 @@ export function createLimiter(cfg, { now = () => Date.now() } = {}) {
     }
   };
   return {
-    hit(addr) {
+    /** Count a question. A request that continues the visitor's current question (same turnId, tool steps left) is free. */
+    hit(addr, { turn = '', continuation = false } = {}) {
       const l = cfg.limits;
       if (!(l.perMinute > 0 || l.perDay > 0 || l.siteDaily > 0)) return;
       const t = Math.floor(now() / 1000);
       const day = new Date(t * 1000).toISOString().slice(0, 10);
       if (!state || state.day !== day || typeof state.salt !== 'string') state = { day, salt: crypto.randomBytes(16).toString('hex'), site: 0, visitors: {} };
       const id = crypto.createHmac('sha256', state.salt).update(addressKey(addr)).digest('hex').slice(0, 20);
-      let [start, inWindow, today] = state.visitors[id] || [0, 0, 0];
+      let [start, inWindow, today, activeTurn = '', steps = 0] = state.visitors[id] || [0, 0, 0];
+      const turnHash = turn ? crypto.createHmac('sha256', state.salt).update(String(turn)).digest('hex').slice(0, 12) : '';
+      if (continuation && turnHash && turnHash === activeTurn && steps < (l.maxToolSteps || 10)) {
+        state.visitors[id] = [start, inWindow, today, activeTurn, steps + 1];
+        save();
+        return;
+      }
       if (t - start >= 60) { start = t; inWindow = 0; }
       const tomorrow = Math.ceil((Date.parse(`${day}T00:00:00Z`) + 86400000) / 1000) - t;
       if (l.siteDaily > 0 && state.site >= l.siteDaily) throw new RelayError(429, 'rate-limit', 'The assistant has reached its limit for today. Please try again tomorrow.', { detail: 'siteDaily reached', headers: { 'Retry-After': String(tomorrow) } });
@@ -230,7 +243,7 @@ export function createLimiter(cfg, { now = () => Date.now() } = {}) {
         const wait = Math.max(1, 60 - (t - start));
         throw new RelayError(429, 'rate-limit', `Too many questions in a row (limit ${l.perMinute} per minute). Try again in ${wait} s.`, { headers: { 'Retry-After': String(wait) } });
       }
-      state.visitors[id] = [start, inWindow + 1, today + 1];
+      state.visitors[id] = [start, inWindow + 1, today + 1, turnHash, 0];
       state.site += 1;
       save();
     },
@@ -238,6 +251,28 @@ export function createLimiter(cfg, { now = () => Date.now() } = {}) {
 }
 
 /* ------------------------------------------------------------------------------------------ the relay */
+
+const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+/** Tools and the tool exchange from a request, checked and trimmed to the neutral formats. */
+function toolsFrom(body, cfg) {
+  const tools = Array.isArray(body.tools) ? body.tools : [];
+  const turns = Array.isArray(body.toolTurns) ? body.toolTurns : [];
+  if (tools.length > cfg.limits.maxTools) throw new RelayError(413, 'budget', `Too many tools in one request (${tools.length}, limit ${cfg.limits.maxTools}).`);
+  if (turns.length > cfg.limits.maxToolSteps) throw new RelayError(413, 'budget', `Too many tool steps for one question (limit ${cfg.limits.maxToolSteps}). Ask again to continue.`);
+  const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+  const cleanTools = tools.map((t) => {
+    if (!t || !TOOL_NAME.test(String(t.name || ''))) throw new RelayError(400, 'malformed', 'A tool has an invalid name.');
+    const parameters = obj(t.parameters);
+    return { name: t.name, description: String(t.description || '').slice(0, 2000), parameters: { type: 'object', properties: obj(parameters.properties), ...(Array.isArray(parameters.required) ? { required: parameters.required.map(String) } : {}) } };
+  });
+  const cleanTurns = turns.map((t) => ({
+    text: String(t?.text || ''),
+    calls: (Array.isArray(t?.calls) ? t.calls : []).filter((c) => TOOL_NAME.test(String(c?.name || ''))).map((c) => ({ id: String(c.id || '').slice(0, 128), name: c.name, arguments: obj(c.arguments), ...(c.signature ? { signature: String(c.signature) } : {}) })),
+    results: (Array.isArray(t?.results) ? t.results : []).map((r) => ({ id: String(r?.id || '').slice(0, 128), name: String(r?.name || ''), content: String(r?.content ?? '').slice(0, 100000) })),
+  }));
+  return { tools: cleanTools, toolTurns: cleanTurns };
+}
 
 function readBody(req, max) {
   return new Promise((resolve, reject) => {
@@ -378,7 +413,8 @@ export function createRelay(cfg, { cors = '', isLocal = isLocalRequest, env = pr
       if (cfg.limits.maxMessages > 0 && messages.length > cfg.limits.maxMessages) {
         throw new RelayError(413, 'budget', `This conversation is too long for the assistant (${messages.length} messages, limit ${cfg.limits.maxMessages}). Start a new chat, or lower "Conversation memory" in Settings > Agent.`);
       }
-      if (pub) limiter.hit(req.socket?.remoteAddress);
+      const { tools, toolTurns } = toolsFrom(body, cfg);
+      if (pub) limiter.hit(req.socket?.remoteAddress, { turn: String(body.turnId || '').slice(0, 64), continuation: toolTurns.length > 0 });
 
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
@@ -400,6 +436,8 @@ export function createRelay(cfg, { cors = '', isLocal = isLocalRequest, env = pr
           keyFor: t.keyFor,
           system: String(body.system || ''),
           messages,
+          tools,
+          toolTurns,
           signal: controller.signal,
           onEvent: (e) => {
             if (e.type === 'text') send('delta', { text: e.text });
@@ -407,6 +445,7 @@ export function createRelay(cfg, { cors = '', isLocal = isLocalRequest, env = pr
             else send(e.type === 'notice' ? 'notice' : 'status', { message: e.text });
           },
         });
+        for (const c of result.toolCalls || []) send('tool_call', { id: c.id, name: c.name, arguments: c.arguments || {}, ...(c.signature ? { signature: c.signature } : {}) });
         send('done', { usage: result.usage || null, provider: result.provider, model: result.model });
         res.end();
       } catch (e) {

@@ -210,9 +210,63 @@ window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault()
   applyEditorSettings();
 })();
 
+/* ------------------------------------------------ actions the agent's tools use */
+
+function findText(query, { matchCase = false, limit = 50 } = {}) {
+  const hay = matchCase ? editor.value : editor.value.toLowerCase();
+  const needle = matchCase ? query : query.toLowerCase();
+  const found = [];
+  if (!needle) return found;
+  for (let i = hay.indexOf(needle); i >= 0 && found.length < limit; i = hay.indexOf(needle, i + needle.length)) {
+    const c = caret(editor.value, i);
+    const lineText = editor.value.split('\n')[c.line - 1] || '';
+    found.push({ line: c.line, column: c.col, lineText: lineText.length > 160 ? `${lineText.slice(0, 157)}…` : lineText });
+  }
+  return found;
+}
+
+/** Replace text through the editor's undoable path. Returns how many occurrences were replaced. */
+function replaceText(find, replacement, { all = true, matchCase = false } = {}) {
+  if (!find) return 0;
+  const text = editor.value;
+  const hay = matchCase ? text : text.toLowerCase();
+  const needle = matchCase ? find : find.toLowerCase();
+  let out = '';
+  let from = 0;
+  let count = 0;
+  for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + needle.length)) {
+    out += text.slice(from, i) + replacement;
+    from = i + find.length;
+    count++;
+    if (!all) break;
+  }
+  if (!count) return 0;
+  replaceRange(0, text.length, out + text.slice(from));
+  return count;
+}
+
+function insertText(text, where = 'cursor') {
+  if (where === 'start') replaceRange(0, 0, text);
+  else if (where === 'end') replaceRange(editor.value.length, editor.value.length, text);
+  else replaceRange(editor.selectionStart, editor.selectionEnd, text);
+}
+
+function renameFile(name) {
+  fileName.value = name;
+  setDirty(true);
+  saveDraft();
+  changed();
+}
+
 /** What the integration may use: read-only state, a change signal, and the editor's own actions. */
 export function createEditorApp() {
   return {
+    findText,
+    replaceText,
+    insertText,
+    renameFile,
+    newDocument: () => loadDocument('untitled.txt', ''),
+    selection: () => ({ text: editor.value.slice(editor.selectionStart, editor.selectionEnd), start: editor.selectionStart, end: editor.selectionEnd, ...caret(editor.value, editor.selectionStart) }),
     state: () => ({
       fileName: fileName.value,
       text: editor.value,

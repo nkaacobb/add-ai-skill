@@ -20,6 +20,10 @@ import { renderMarkdown } from '../assets/ai-agent/ui/markdown.js';
 import { debounce, isTypingKey } from '../assets/ai-agent/ui/dom.js';
 import { parseBlockValues, parseLooseObject } from '../assets/ai-agent/core/blocks.js';
 import { probeRelay, relayDefaults, adjustForRelay, mergeSettings } from '../assets/ai-agent/core/relay-probe.js';
+import {
+  normalizeTool, toJsonSchema, validateArgs, classifyTools, buildToolPrompt, requestToolSpec, toolSpecs, parseTextToolCalls,
+  textTurnMessages, toolsConfigPatch, exportToolsConfig, toolEnabled, serializeResult, formatCall,
+} from '../assets/ai-agent/core/tools.js';
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -487,4 +491,146 @@ test('relay stream comments (": open", ": keepalive") are ignored by the client'
 test('estimateTokens (Settings > Context size): about four characters per token', () => {
   assert.equal(estimateTokens(''), 0);
   assert.equal(estimateTokens('x'.repeat(4000)), 1000);
+});
+
+/* ------------------------------------------------------------------------------------------ 1.2: tools */
+
+const TOOL_DEFS = [
+  { name: 'filter_orders', description: 'Show only orders with this status.', effect: 'write', pages: ['orders'], run: () => 'ok',
+    parameters: { status: { type: 'enum', values: ['open', 'shipped'], required: true }, limit: { type: 'integer', min: 1, max: 50 } } },
+  { name: 'count_orders', description: 'Count the orders on screen.', effect: 'read', enabled: true, run: () => 3 },
+  { name: 'delete_order', description: 'Delete one order.', effect: 'destructive', run: () => 'gone', parameters: { id: { type: 'string', required: true } } },
+];
+
+test('tools: definitions are checked, parameters become JSON Schema, arguments are validated and clamped', () => {
+  const [filter] = TOOL_DEFS.map((d) => normalizeTool(d));
+  assert.equal(filter.title, 'Filter orders');
+  assert.equal(filter.enabled, false, 'tools start turned off unless the app says otherwise');
+  assert.deepEqual(toJsonSchema(filter.parameters), {
+    type: 'object',
+    properties: { status: { type: 'string', enum: ['open', 'shipped'] }, limit: { type: 'integer', minimum: 1, maximum: 50 } },
+    required: ['status'],
+  });
+  assert.deepEqual(validateArgs(filter, '{"status": "Open", "limit": 500, "extra": 1}'), { ok: true, args: { status: 'open', limit: 50 }, errors: [] });
+  assert.equal(validateArgs(filter, { limit: 5 }).ok, false, 'a missing required argument is an error');
+  assert.deepEqual(validateArgs(filter, 'status: shipped').args, { status: 'shipped' }, 'lenient arguments from small models');
+  assert.throws(() => normalizeTool({ name: 'bad name', description: 'x', run() {} }), /not valid/);
+  assert.throws(() => normalizeTool({ name: 'x', run() {} }), /needs a description/);
+  assert.throws(() => normalizeTool({ name: 'request_tool', description: 'x', run() {} }), /reserved/);
+});
+
+test('tools: on/off state, availability per page, and what the model is told', () => {
+  const tools = TOOL_DEFS.map((d) => normalizeTool(d));
+  const settings = { toolStates: { filter_orders: true } };
+  const onOrders = classifyTools(tools, settings, 'orders');
+  assert.deepEqual(onOrders.callable.map((t) => t.name), ['filter_orders', 'count_orders']);
+  assert.deepEqual(onOrders.off.map((t) => t.name), ['delete_order']);
+  const elsewhere = classifyTools(tools, settings, 'dashboard');
+  assert.deepEqual(elsewhere.elsewhere.map((t) => t.name), ['filter_orders']);
+  const prompt = buildToolPrompt({ classes: onOrders, mode: 'native' });
+  assert.match(prompt, /== TOOLS ==/);
+  assert.match(prompt, /Turned off by the user[\s\S]*delete_order/);
+  assert.match(prompt, /request_tool/);
+  assert.match(buildToolPrompt({ classes: onOrders, mode: 'native', enabled: false }), /switched tools off/);
+  const text = buildToolPrompt({ classes: onOrders, mode: 'text' });
+  assert.match(text, /filter_orders\(status: "open"\|"shipped", limit\?: integer 1\.\.50\)/, 'text mode lists signatures');
+  assert.deepEqual(requestToolSpec(onOrders.off).parameters.properties.name.enum, ['delete_order']);
+  assert.match(toolSpecs([tools[2]])[0].description, /destructive/);
+});
+
+test('tools: text-mode tool blocks are found in a reply and removed from what the user reads', () => {
+  const reply = 'Let me filter.\n```tool\n{"name": "filter_orders", "arguments": {"status": "open"}}\n```\n```tool\nname: count_orders\n```';
+  const { calls, text } = parseTextToolCalls(reply);
+  assert.deepEqual(calls.map((c) => [c.name, c.arguments]), [['filter_orders', { status: 'open' }], ['count_orders', {}]]);
+  assert.equal(text, 'Let me filter.');
+  const msgs = textTurnMessages([{ text: 'Let me filter.', calls: calls.slice(0, 1), results: [{ id: 'x', name: 'filter_orders', content: '12 shown' }] }]);
+  assert.match(msgs[0].content, /```tool\n\{"name":"filter_orders"/);
+  assert.match(msgs[1].content, /<tool_results>\nfilter_orders: 12 shown\n<\/tool_results>/);
+});
+
+test('tools: config file in and out, and only real changes are stored', () => {
+  const tools = TOOL_DEFS.map((d) => normalizeTool(d));
+  const patch = toolsConfigPatch({ confirmWrites: false, tools: { filter_orders: true, delete_order: { enabled: false }, 'bad name': true } });
+  assert.deepEqual(patch, { toolStates: { filter_orders: true, delete_order: false }, confirmWrites: false });
+  const local = memStorage();
+  const store = createSettingsStore({ namespace: 'tl', defaults: patch, storage: local, session: memStorage() });
+  assert.equal(toolEnabled(tools[0], store.get()), true, 'the app config turns it on');
+  store.save({ toolStates: { count_orders: false } });
+  const stored = JSON.parse(local._m.get('tl.settings')).toolStates;
+  assert.deepEqual(stored, { count_orders: false }, 'states equal to the app defaults are not stored');
+  assert.deepEqual(store.get().toolStates, { filter_orders: true, delete_order: false, count_orders: false });
+  const exported = exportToolsConfig(tools, store.get());
+  assert.equal(exported.confirmWrites, false);
+  assert.deepEqual(Object.fromEntries(Object.entries(exported.tools).map(([k, v]) => [k, v.enabled])), { count_orders: false, delete_order: false, filter_orders: true });
+  assert.deepEqual(toolsConfigPatch(exported).toolStates, { count_orders: false, delete_order: false, filter_orders: true }, 'an exported file loads back');
+});
+
+test('tools: results and calls are summarised for the model and the history', () => {
+  assert.equal(serializeResult(undefined), 'Done.');
+  assert.equal(serializeResult({ b: 1, a: [2] }), '{"a":[2],"b":1}');
+  assert.match(serializeResult('x'.repeat(9000)), /result cut: 9,000 characters/);
+  assert.equal(formatCall('filter_orders', { status: 'open', limit: 5 }), 'filter_orders(status: "open", limit: 5)');
+  const out = buildRequestMessages({ messages: [
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: 'Filtered.', actions: [{ call: 'filter_orders(status: "open")', status: 'ok' }, { call: 'delete_order(id: "7")', status: 'declined' }] },
+    { role: 'user', content: 'next' },
+  ] });
+  assert.equal(out[1].content, '[Actions taken: filter_orders(status: "open") → done; delete_order(id: "7") → declined by the user]\n\nFiltered.');
+});
+
+const SPECS = [{ name: 'filter_orders', description: 'Filter.', parameters: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'] } }];
+const TURNS = [{ text: 'On it.', calls: [{ id: 'c1', name: 'filter_orders', arguments: { status: 'open' }, signature: 'sig' }], results: [{ id: 'c1', name: 'filter_orders', content: '12 shown' }] }];
+
+test('openai-chat: tools out, streamed tool-call pieces in, the exchange back in chat-completions form', async () => {
+  const r = openai.buildChat({ cfg: { baseUrl: 'http://x', model: 'm' }, system: 'S', messages: [{ role: 'user', content: 'q' }], tools: SPECS, toolTurns: TURNS });
+  assert.deepEqual(r.body.tools, [{ type: 'function', function: { name: 'filter_orders', description: 'Filter.', parameters: SPECS[0].parameters } }]);
+  assert.deepEqual(r.body.messages.slice(-2), [
+    { role: 'assistant', content: 'On it.', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'filter_orders', arguments: '{"status":"open"}' } }] },
+    { role: 'tool', tool_call_id: 'c1', content: '12 shown' },
+  ]);
+  const d = (x) => `data: ${JSON.stringify({ choices: [{ delta: x }] })}\n\n`;
+  const fetch = sseFetch([d({ content: 'Let me look.' }), d({ tool_calls: [{ index: 0, id: 'call_9', function: { name: 'filter_orders', arguments: '{"sta' } }] }), d({ tool_calls: [{ index: 0, function: { arguments: 'tus":"open"}' } }] }), 'data: [DONE]\n\n']);
+  const events = [];
+  const res = await openai.openaiChat.stream({ cfg: { baseUrl: 'http://x', model: 'm' }, messages: [{ role: 'user', content: 'q' }], tools: SPECS, onEvent: (e) => events.push(e), fetch });
+  assert.deepEqual(res.toolCalls, [{ id: 'call_9', name: 'filter_orders', arguments: { status: 'open' } }]);
+  assert.deepEqual(events, [{ type: 'text', text: 'Let me look.' }]);
+});
+
+test('anthropic and gemini: tool formats both ways', async () => {
+  const a = anthropic.buildChat({ cfg: { baseUrl: 'https://api.anthropic.com', model: 'm' }, messages: [{ role: 'user', content: 'q' }], tools: SPECS, toolTurns: TURNS });
+  assert.deepEqual(a.body.tools, [{ name: 'filter_orders', description: 'Filter.', input_schema: SPECS[0].parameters }]);
+  assert.deepEqual(a.body.messages.slice(-2), [
+    { role: 'assistant', content: [{ type: 'text', text: 'On it.' }, { type: 'tool_use', id: 'c1', name: 'filter_orders', input: { status: 'open' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: '12 shown' }] },
+  ]);
+  const ev = (x) => `data: ${JSON.stringify(x)}\n\n`;
+  const aFetch = sseFetch([
+    ev({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_1', name: 'filter_orders', input: {} } }),
+    ev({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"status":' } }),
+    ev({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '"open"}' } }),
+  ]);
+  const ar = await anthropic.anthropic.stream({ cfg: { baseUrl: 'https://api.anthropic.com', model: 'm' }, messages: [{ role: 'user', content: 'q' }], tools: SPECS, onEvent: () => {}, fetch: aFetch });
+  assert.deepEqual(ar.toolCalls, [{ id: 'toolu_1', name: 'filter_orders', arguments: { status: 'open' } }]);
+
+  const g = gemini.buildChat({ cfg: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gm' }, messages: [{ role: 'user', content: 'q' }], tools: SPECS, toolTurns: TURNS });
+  assert.deepEqual(g.body.tools, [{ functionDeclarations: [{ name: 'filter_orders', description: 'Filter.', parameters: SPECS[0].parameters }] }]);
+  assert.deepEqual(g.body.contents.slice(-2), [
+    { role: 'model', parts: [{ text: 'On it.' }, { functionCall: { name: 'filter_orders', args: { status: 'open' } }, thoughtSignature: 'sig' }] },
+    { role: 'user', parts: [{ functionResponse: { name: 'filter_orders', response: { result: '12 shown' } } }] },
+  ]);
+  const gFetch = sseFetch([ev({ candidates: [{ content: { parts: [{ functionCall: { name: 'filter_orders', args: { status: 'open' } }, thoughtSignature: 'abc' }] } }] })]);
+  const gr = await gemini.gemini.stream({ cfg: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gm' }, messages: [{ role: 'user', content: 'q' }], tools: SPECS, onEvent: () => {}, fetch: gFetch });
+  assert.deepEqual(gr.toolCalls, [{ id: 'gemini_1', name: 'filter_orders', arguments: { status: 'open' }, signature: 'abc' }]);
+});
+
+test('relay adapter: tools, the exchange and the turn id go out; tool_call events come back', async () => {
+  let sent;
+  const fetch = async (url, init) => {
+    sent = JSON.parse(init.body);
+    return sseFetch([': open\n\n', 'event: tool_call\ndata: {"id":"c1","name":"filter_orders","arguments":{"status":"open"}}\n\n', 'event: done\ndata: {}\n\n'])();
+  };
+  const settings = sanitizeSettings({ transport: 'relay', relayUrl: 'http://x/relay' });
+  const r = await streamChat({ settings, keyFor: () => '', system: '', messages: [{ role: 'user', content: 'q' }], tools: SPECS, toolTurns: TURNS, turnId: 't1', fetch });
+  assert.deepEqual(r.toolCalls, [{ id: 'c1', name: 'filter_orders', arguments: { status: 'open' } }]);
+  assert.deepEqual([sent.tools, sent.toolTurns, sent.turnId], [SPECS, TURNS, 't1']);
 });

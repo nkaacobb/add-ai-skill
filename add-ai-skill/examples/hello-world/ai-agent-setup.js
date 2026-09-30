@@ -8,9 +8,13 @@
 //   content  the document on screen — fingerprinted for sync      (page.content)
 //   view     cursor, selection, save state, editor settings — sent, not hashed (page.view)
 // …plus one change signal: agent.contextChanged() whenever the document changes.
+//
+// Tools (ai-tools.js) let the agent act: find, insert, replace, change editor settings, rename, start over. Which
+// ones are on comes from ai-tools.json (the app's defaults) and from each user's Settings > Tools.
 
 import { createAiAgent, DEFAULT_SYSTEM_PROMPT, parseBlockValues, setControlValue } from '../../assets/ai-agent/ai-agent.js';
 import { editorContent, editorView, EDITOR_SETTINGS } from './content.js';
+import { editorTools } from './ai-tools.js';
 
 /** The model was asked for ```editor-settings; small models often answer ```json instead — accepted when every key
  *  is a known setting. Values are clamped to the real controls' ranges. */
@@ -29,6 +33,10 @@ export function mountAgent(app) {
     },
     // relayProbe: true,    // pick the relay automatically when it answers (see references/providers.md)
 
+    // What the agent can do, and which of it is turned on by default.
+    tools: editorTools(app),
+    toolsConfig: 'ai-tools.json',
+
     // What this application is. Goes into the system prompt on every request. Keep it short: titles and lists.
     app: {
       name: 'Hello World',
@@ -38,9 +46,10 @@ export function mountAgent(app) {
         'Open a text file from disk (button or drag and drop) and save the document as a file',
         'Apply the agent\'s suggestions with the "Insert at cursor" and "Replace document" buttons on its code blocks',
         'Change the editor font size (11-24 px) and line wrapping, also from the agent\'s "Apply editor settings" button',
+        'The agent can edit through its tools (find, insert, replace, editor settings…): the user confirms each change',
       ],
       limits: [
-        'The agent cannot change the document or the settings by itself: the user applies suggestions with the buttons',
+        'The agent only uses the tools that are turned on (Settings > Tools); changes need the user\'s confirmation',
         'Plain text only: no formatting, images, or multiple documents',
       ],
     },
@@ -64,7 +73,7 @@ You are the writing agent inside Hello World, a plain-text editor. Help the user
 - To change the editor's font size (11-24) or line wrapping, answer with a fenced code block tagged \`editor-settings\` holding JSON, for example {"fontSize": 17, "wrap": false}. The user applies it with a button.`,
 
     welcome: '**Hi!** I can read the document in the editor. Ask me to summarise it, proofread it, rewrite part of it, or continue it.\n\nThe flag above shows whether my copy of the page is current.',
-    suggestions: ['Summarize this document', 'Proofread it and list the fixes', 'Suggest a better title', 'Make the text bigger'],
+    suggestions: ['Summarize this document', 'Fix the spelling mistakes', 'Make the text bigger', 'What tools can you use?'],
 
     // Buttons on the agent's code blocks and replies, wired to this app's own abilities.
     codeActions: [

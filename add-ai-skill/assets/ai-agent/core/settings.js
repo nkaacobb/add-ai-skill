@@ -31,6 +31,13 @@ export const SETTINGS_SCHEMA = Object.freeze({
   shareScreen: ['boolean', true],
   timeoutSec: ['int', 120, [10, 900]],
   rememberKeys: ['boolean', false],
+  // Tools (core/tools.js): the master switch, how calls are made, confirmations, and each tool's on/off state.
+  toolsEnabled: ['boolean', true],
+  toolMode: ['enum', 'auto', ['auto', 'native', 'text']],   // auto = native tool calls, text blocks if refused
+  confirmWrites: ['boolean', true],                         // ask before tools that change the application
+  confirmDestructive: ['boolean', true],                    // ask before destructive tools
+  maxToolSteps: ['int', 8, [1, 30]],                        // tool rounds per question
+  toolStates: ['toolStates', {}],                           // { toolName: true | false }, merged over the defaults
 });
 
 export const DEFAULT_SETTINGS = Object.freeze(Object.fromEntries(
@@ -58,6 +65,7 @@ function validField([type, , extra], v) {
     case 'endpoint': return validEndpoint(v);
     case 'text': return typeof v === 'string' && v.length <= LIMITS.prompt;
     case 'profiles': return !!v && typeof v === 'object' && !Array.isArray(v);
+    case 'toolStates': return !!v && typeof v === 'object' && !Array.isArray(v);
     default: return false;
   }
 }
@@ -76,16 +84,28 @@ function sanitizeProfiles(v, base = {}) {
   return out;
 }
 
+function sanitizeToolStates(v, base = {}) {
+  const out = {};
+  for (const src of [base, v]) {
+    if (!src || typeof src !== 'object' || Array.isArray(src)) continue;
+    for (const [name, on] of Object.entries(src)) {
+      if (/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name) && typeof on === 'boolean') out[name] = on;
+    }
+  }
+  return out;
+}
+
 /** Merge a candidate over `base`, field by field; anything invalid keeps the base value. */
 export function sanitizeSettings(candidate, base = DEFAULT_SETTINGS) {
   const src = candidate && typeof candidate === 'object' && !Array.isArray(candidate) ? candidate : {};
   const out = {};
   for (const [k, spec] of Object.entries(SETTINGS_SCHEMA)) {
-    if (k === 'profiles') continue;
+    if (k === 'profiles' || k === 'toolStates') continue;
     const has = Object.prototype.hasOwnProperty.call(src, k);
     out[k] = has && validField(spec, src[k]) ? src[k] : (base[k] ?? spec[1]);
   }
   out.profiles = sanitizeProfiles(src.profiles, sanitizeProfiles(base.profiles || {}));
+  out.toolStates = sanitizeToolStates(src.toolStates, sanitizeToolStates(base.toolStates || {}));
   if (out.fallbackProvider === out.provider) out.fallbackProvider = '';
   return out;
 }
@@ -176,15 +196,19 @@ export function createSettingsStore({ namespace = 'ai-agent', defaults = {}, sto
   /** Save a full or partial settings object. Returns false if the browser refused to store it. */
   function save(next) {
     const before = current;
-    current = sanitizeSettings({ ...before, ...next, profiles: { ...before.profiles, ...(next?.profiles || {}) } }, base);
+    current = sanitizeSettings({ ...before, ...next, profiles: { ...before.profiles, ...(next?.profiles || {}) }, toolStates: { ...before.toolStates, ...(next?.toolStates || {}) } }, base);
     if (before.rememberKeys !== current.rememberKeys) {
       // Move the keys to the store the user just chose, and clear them from the other one.
       const merged = { ...readKeys(sess), ...readKeys(local) };
       writeKeys(otherStore(), {});
       writeKeys(keyStore(), merged);
     }
+    // Tool states are stored only where they differ from the app's defaults, so a later change to the app's tool
+    // config still reaches users who never touched that tool.
+    const baseStates = base.toolStates || {};
+    const stored = { ...current, toolStates: Object.fromEntries(Object.entries(current.toolStates || {}).filter(([k, v]) => baseStates[k] !== v)) };
     let ok = true;
-    try { local.setItem(SETTINGS_KEY, JSON.stringify(current)); } catch { ok = false; }
+    try { local.setItem(SETTINGS_KEY, JSON.stringify(stored)); } catch { ok = false; }
     emit();
     return ok;
   }

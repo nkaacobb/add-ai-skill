@@ -49,7 +49,8 @@ export function resolveTarget(settings, keyFor, providerId = settings.provider, 
 }
 
 /**
- * Stream one reply.
+ * Stream one reply. With `tools` (neutral specs, core/tools.js) the reply may end in tool calls instead of (or after)
+ * text: they are returned as `toolCalls`; `toolTurns` carries the calls and results of this question so far.
  * @param {object} o
  * @param {object} o.settings
  * @param {(id: string) => string} o.keyFor
@@ -57,19 +58,22 @@ export function resolveTarget(settings, keyFor, providerId = settings.provider, 
  * @param {Array<{role, content}>} o.messages
  * @param {AbortSignal} [o.signal]
  * @param {(e: {type: 'text'|'reasoning'|'notice'|'status', text: string}) => void} o.onEvent
- * @returns {Promise<{usage?, provider, label, model, fellBack?}>}
+ * @returns {Promise<{usage?, provider, label, model, fellBack?, toolCalls: Array<{id, name, arguments}>}>}
  */
-export async function streamChat({ settings, keyFor, system, messages, signal, onEvent, fetch, relayHeaders }) {
+export async function streamChat({ settings, keyFor, system, messages, signal, onEvent, fetch, relayHeaders, tools, toolTurns, turnId }) {
   const primary = resolveTarget(settings, keyFor, settings.provider, { relayHeaders });
   let produced = false;
   const forward = (e) => {
     if ((e.type === 'text' || e.type === 'reasoning') && e.text) produced = true;
     if (onEvent) onEvent(e);
   };
-  const run = (t) => t.adapter.stream({
-    cfg: t.cfg, key: t.key, system, messages, maxTokens: settings.maxOutputTokens, temperature: settings.temperature,
-    signal, onEvent: forward, fetch,
-  });
+  const run = async (t) => {
+    const r = await t.adapter.stream({
+      cfg: t.cfg, key: t.key, system, messages, maxTokens: settings.maxOutputTokens, temperature: settings.temperature,
+      signal, onEvent: forward, fetch, tools, toolTurns, turnId,
+    });
+    return { ...r, toolCalls: Array.isArray(r?.toolCalls) ? r.toolCalls : [] };
+  };
   try {
     const r = await run(primary);
     return { ...r, provider: primary.provider.id, label: primary.provider.label, model: primary.cfg.model };

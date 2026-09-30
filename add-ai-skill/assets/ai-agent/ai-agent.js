@@ -25,6 +25,7 @@ import { AgentDrawer } from './ui/drawer.js';
 import { debounce } from './ui/dom.js';
 import { isDevHost } from './ui/layout-check.js';
 import { probeRelay, relayDefaults, adjustForRelay, mergeSettings } from './core/relay-probe.js';
+import { normalizeTool, toolEnabled, toolAvailable, toolsConfigPatch, exportToolsConfig, validateArgs, serializeResult, toolSpecs } from './core/tools.js';
 
 export { PROVIDERS, PROVIDER_IDS } from './core/providers.js';
 export { DEFAULT_SYSTEM_PROMPT } from './core/prompt.js';
@@ -35,7 +36,7 @@ export { parseBlockValues } from './core/blocks.js';
 export { probeRelay } from './core/relay-probe.js';
 export { setControlValue } from './ui/dom.js';
 
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v) && typeof v.then !== 'function';
 
@@ -70,6 +71,8 @@ export function createAiAgent(options = {}) {
     devWarnings: 'auto',
     relayProbe: false,
     contextWarnTokens: 3000,
+    tools: [],
+    toolsConfig: null,
     codeActions: [],
     replyActions: [],
     defaults: {},
@@ -111,10 +114,36 @@ export function createAiAgent(options = {}) {
     const s = store.get();
     const [appText, pageText] = await Promise.all([ctx.appText(), ctx.pageText()]);
     const base = s.systemPrompt && s.systemPrompt.trim() ? s.systemPrompt : defaultPrompt();
-    return buildSystemPrompt({ base, appText, pageText, share: s.shareScreen });
+    return buildSystemPrompt({ base, appText, pageText, share: s.shareScreen, toolsText: drawer ? drawer.toolPrompt(s) : '' });
   };
 
   let drawer = null;
+
+  /* Tools: the app-wide catalog (`tools` option, agent.tools.register) plus the current page's `tools`. */
+  const appTools = new Map();
+  const pageToolCache = new WeakMap();
+  const registerTools = (defs, { page = '' } = {}) => {
+    const out = [];
+    for (const def of Array.isArray(defs) ? defs : [defs]) {
+      try { out.push(normalizeTool(def, { page })); } catch (e) { console.error(`[ai-agent] Tool skipped: ${e.message}`); }
+    }
+    return out;
+  };
+  for (const t of registerTools(o.tools)) appTools.set(t.name, t);
+  const toolRegistry = {
+    all() {
+      const page = ctx.page;
+      let pageTools = [];
+      if (page && Array.isArray(page.tools) && page.tools.length) {
+        pageTools = pageToolCache.get(page);
+        if (!pageTools) { pageTools = registerTools(page.tools, { page: page.id }); pageToolCache.set(page, pageTools); }
+      }
+      const merged = new Map(appTools);
+      for (const t of pageTools) merged.set(t.name, t);
+      return [...merged.values()];
+    },
+    get(name) { return toolRegistry.all().find((t) => t.name === name) || null; },
+  };
 
   const getContextInfo = async () => {
     const s = store.get();
@@ -123,9 +152,12 @@ export function createAiAgent(options = {}) {
     const [appText, pageText, viewText, snapshot, system] = await Promise.all([
       ctx.appText(), ctx.pageText(), ctx.viewText(), ctx.snapshot(), systemPrompt(),
     ]);
+    const callable = drawer.toolMode(s) === 'native' && s.toolsEnabled
+      ? toolRegistry.all().filter((t) => toolEnabled(t, s) && toolAvailable(t, ctx.page?.id)) : [];
     return {
       status: { state: status.state, currentHash: status.hash, syncedHash: status.syncedHash },
       appText, pageText, viewText, snapshot, system, share: s.shareScreen, hasContent: ctx.hasContent,
+      toolsJson: callable.length ? JSON.stringify(toolSpecs(callable)) : '',
     };
   };
 
@@ -133,11 +165,12 @@ export function createAiAgent(options = {}) {
   const panel = createSettingsPanel({
     store, defaultPrompt, getContextInfo, relayHeaders: o.relayHeaders, theme: o.theme, title: o.title, mount: o.mount,
     isolate: o.isolateKeys !== false, warnTokens: o.contextWarnTokens, relayInfo: () => relay,
+    getTools: () => toolRegistry.all(), pageId: () => ctx.page?.id,
   });
   let onDialogChange = () => {};
   drawer = new AgentDrawer({
     ctx, store, panel, emit, defaultPrompt,
-    options: { ...o, storage, session: safeStorage('sessionStorage'), onDialogChange: () => onDialogChange() },
+    options: { ...o, storage, session: safeStorage('sessionStorage'), onDialogChange: () => onDialogChange(), toolRegistry },
   });
 
   // Trailing debounce with a max wait: continuous updates (animation, simulation, live data) still refresh the flag
@@ -145,9 +178,9 @@ export function createAiAgent(options = {}) {
   const changed = debounce(() => drawer.refreshStatus(), o.debounceMs, { maxWait: Math.max(0, Number(o.debounceMaxMs) || 0) });
   onDialogChange = () => changed();
 
-  // Async defaults and the relay probe. Questions wait for this (drawer.ready); nothing else does.
+  // Async defaults, the tool config file and the relay probe. Questions wait for this (drawer.ready); nothing else does.
   const needsAsync = !isPlainObject(o.defaults) && o.defaults != null;
-  const ready = (needsAsync || o.relayProbe) ? (async () => {
+  const ready = (needsAsync || o.relayProbe || o.toolsConfig) ? (async () => {
     let d = syncDefaults;
     if (needsAsync) {
       try {
@@ -155,6 +188,21 @@ export function createAiAgent(options = {}) {
         if (isPlainObject(v)) d = v;
       } catch (e) {
         console.error('[ai-agent] The `defaults` option failed; using the built-in defaults.', e);
+      }
+    }
+    if (o.toolsConfig) {
+      // The app's tool selection (e.g. ai-tools.json): an object, a URL, or a (possibly async) function.
+      try {
+        let tc = typeof o.toolsConfig === 'function' ? await o.toolsConfig() : await o.toolsConfig;
+        if (typeof tc === 'string') {
+          const res = await fetch(new URL(tc, globalThis.location?.href).href, { cache: 'no-store', credentials: 'same-origin' });
+          if (!res.ok) throw new Error(`HTTP ${res.status} for ${tc}`);
+          tc = await res.json();
+        }
+        const patch = toolsConfigPatch(tc);
+        d = { ...d, ...patch, toolStates: { ...(d.toolStates || {}), ...(patch.toolStates || {}) } };
+      } catch (e) {
+        console.warn('[ai-agent] The toolsConfig could not be loaded; tools keep their built-in defaults.', e);
       }
     }
     if (o.relayProbe) {
@@ -206,6 +254,32 @@ export function createAiAgent(options = {}) {
     },
     rereadPage() { drawer.forceReread = true; return drawer.refreshStatus(); },
     systemPrompt,
+
+    tools: {
+      /** Every tool the agent knows now (app-wide + this page), with its state. */
+      list() {
+        const s = store.get();
+        return toolRegistry.all().map((t) => ({
+          name: t.name, title: t.title, description: t.description, effect: t.effect, group: t.group, pages: [...t.pages],
+          enabled: toolEnabled(t, s), available: toolAvailable(t, ctx.page?.id),
+        }));
+      },
+      /** Add or replace app-wide tools. */
+      register(defs) { for (const t of registerTools(defs)) appTools.set(t.name, t); panel.refreshTools?.(); },
+      unregister(name) { appTools.delete(name); panel.refreshTools?.(); },
+      /** Turn a tool on or off for this user (saved like the other settings). */
+      setEnabled(name, on) { drawer.setToolEnabled(name, on); },
+      /** Run a tool directly (tests, scripted checks): arguments are validated; no confirmation, no on/off check. */
+      async run(name, args = {}) {
+        const t = toolRegistry.get(name);
+        if (!t) throw new Error(`No tool named "${name}".`);
+        const v = validateArgs(t, args);
+        if (!v.ok) throw new Error(`Invalid arguments: ${v.errors.join('; ')}`);
+        return serializeResult(await t.run(v.args, { agent: api, signal: undefined, call: { id: 'direct', name } }));
+      },
+      /** The current selection as the JSON an app ships as its toolsConfig (e.g. ai-tools.json). */
+      exportConfig() { return exportToolsConfig(toolRegistry.all(), store.get()); },
+    },
 
     on,
     settings: {

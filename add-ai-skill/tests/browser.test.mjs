@@ -297,6 +297,115 @@ test('relayProbe on a static server (relay.php served as source) falls back to d
   assert.deepEqual(d, { before: 'lmstudio', after: 'custom', t: 1.5 });
 });
 
+/* ------------------------------------------------------------------------------------------ tools */
+
+test('tools: the drawer runs the model\'s tool calls, asks before changes, and offers to turn off tools on', { skip, timeout: 90000 }, async () => {
+  const { startFakeUpstream } = await import('./fixtures/fake-upstream.mjs');
+  const upstream = await startFakeUpstream({
+    cors: true,
+    respond: (body, n) => [
+      { toolCalls: [{ id: 'c1', name: 'count_items', arguments: {} }] },
+      { text: 'Renaming it now.', toolCalls: [{ id: 'c2', name: 'set_title', arguments: { title: 'Hello tools' } }] },
+      { toolCalls: [{ id: 'c3', name: 'request_tool', arguments: { name: 'wipe', reason: 'You asked me to clear the list.' } }] },
+      { text: 'All done: 3 items, renamed, and the wipe tool is on now.' },
+    ][n - 1] || { text: 'Extra.' },
+  });
+  try {
+    await fresh();
+    await page.evaluate((url) => {
+      document.body.insertAdjacentHTML('beforeend', '<h1 id="title">Old title</h1>');
+      window.agent = M.createAiAgent({
+        appId: 'tools-e2e', launcher: false, devWarnings: false,
+        defaults: { provider: 'custom', profiles: { custom: { baseUrl: url, model: 'fake-model' } } },
+        page: { id: 'list', title: 'List', content: () => `Title: ${document.getElementById('title').textContent}\nItems: a, b, c` },
+        tools: [
+          { name: 'count_items', description: 'Count the items.', effect: 'read', enabled: true, run: () => 3 },
+          { name: 'set_title', description: 'Rename the list.', effect: 'write', enabled: true, parameters: { title: { type: 'string', required: true } },
+            run: ({ title }) => { document.getElementById('title').textContent = title; return `Renamed to ${title}`; } },
+          { name: 'wipe', description: 'Remove every item.', effect: 'destructive', run: () => 'wiped' },
+        ],
+      });
+      window.done = agent.ask('Count, rename to "Hello tools", then clear it.');
+    }, upstream.url);
+
+    const card = async (text) => page.waitFor((t) => [...document.querySelectorAll('.aia-tool-card:not([hidden])')].some((c) => c.textContent.includes(t)), { timeoutMs: 15000, args: [text] });
+    await card('Run Set title');
+    assert.equal(await page.evaluate(() => document.getElementById('title').textContent), 'Old title', 'nothing changes before the user says so');
+    await page.evaluate(() => document.querySelector('.aia-tool-card:not([hidden]) [data-decide="run"]').click());
+    await card('which is turned off');
+    await page.evaluate(() => document.querySelector('.aia-tool-card:not([hidden]) [data-decide="on"]').click());
+    await page.evaluate(() => window.done);
+
+    const r = await page.evaluate(() => ({
+      title: document.getElementById('title').textContent,
+      chips: [...document.querySelectorAll('.aia-drawer .aia-tool')].map((c) => [c.querySelector('.aia-tool-call').textContent, c.dataset.status]),
+      answer: [...document.querySelectorAll('.aia-drawer .aia-msg.aia-assistant .aia-md')].pop().textContent,
+      wipeOn: agent.settings.get().toolStates.wipe,
+      saved: JSON.parse(localStorage.getItem('tools-e2e.ai.chats'))[0].messages.find((m) => m.role === 'assistant').actions.map((a) => [a.call, a.status]),
+      flag: agent.getContextStatus().state,
+    }));
+    assert.equal(r.title, 'Hello tools');
+    assert.deepEqual(r.chips, [['count_items()', 'ok'], ['set_title(title: "Hello tools")', 'ok'], ['wipe()', 'ok']]);
+    assert.match(r.answer, /Renaming it now\.[\s\S]*All done/);
+    assert.equal(r.wipeOn, true, 'turning a tool on from the chat is saved like the Tools tab');
+    assert.deepEqual(r.saved, [['count_items()', 'ok'], ['set_title(title: "Hello tools")', 'ok'], ['turn on wipe', 'ok']]);
+    assert.equal(r.flag, 'dirty', 'the tools changed the screen: the next question re-reads it');
+
+    const [first, second, third, fourth] = upstream.chats().map((c) => c.body);
+    assert.deepEqual(first.tools.map((t) => t.function.name), ['count_items', 'set_title', 'request_tool'], 'turned-off tools are offered through request_tool only');
+    assert.match(first.messages[0].content, /== TOOLS ==[\s\S]*Turned off by the user[\s\S]*wipe/);
+    assert.deepEqual(second.messages.filter((m) => m.role === 'tool').map((m) => m.content), ['3']);
+    const afterRename = third.messages.filter((m) => m.role === 'tool').pop().content;
+    assert.match(afterRename, /^Renamed to Hello tools\n\n\[The screen after these actions\]\n<page_snapshot [^>]*>\nTitle: Hello tools/, 'the model sees the effect of its action');
+    assert.deepEqual(fourth.tools.map((t) => t.function.name), ['count_items', 'set_title', 'wipe'], 'once turned on, the tool is offered');
+
+    // Settings > Tools: a checkbox per tool, saved on Save, exported as the app's tool config.
+    const tab = await page.evaluate(async () => {
+      agent.openSettings('tools');
+      const boxes = () => [...document.querySelectorAll('.aia-modal [data-tool]')];
+      const before = boxes().map((b) => [b.dataset.tool, b.checked]);
+      const wipe = boxes().find((b) => b.dataset.tool === 'wipe');
+      wipe.click();
+      document.querySelector('.aia-modal [data-act="save"]').click();
+      await new Promise((res) => setTimeout(res, 50));
+      return { before, wipeAfter: agent.settings.get().toolStates.wipe, exported: agent.tools.exportConfig().tools.wipe.enabled, list: agent.tools.list().map((t) => [t.name, t.enabled, t.effect]) };
+    });
+    assert.deepEqual(tab.before, [['count_items', true], ['set_title', true], ['wipe', true]]);
+    assert.equal(tab.wipeAfter, false);
+    assert.equal(tab.exported, false);
+    assert.deepEqual(tab.list, [['count_items', true, 'read'], ['set_title', true, 'write'], ['wipe', false, 'destructive']]);
+  } finally {
+    await upstream.close();
+  }
+
+  // Text mode (models without tool calling) and confirmations switched off: no card, the block is parsed.
+  const textModel = await startFakeUpstream({
+    cors: true,
+    respond: (body, n) => (n === 1 ? { text: 'Sure.\n```tool\n{"name": "set_title", "arguments": {"title": "Via text"}}\n```' } : { text: 'Renamed.' }),
+  });
+  try {
+    await fresh();
+    await page.evaluate(async (url) => {
+      document.body.insertAdjacentHTML('beforeend', '<h1 id="title">Old</h1>');
+      window.agent = M.createAiAgent({
+        appId: 'tools-text', launcher: false, devWarnings: false,
+        defaults: { provider: 'custom', toolMode: 'text', confirmWrites: false, profiles: { custom: { baseUrl: url, model: 'm' } } },
+        tools: [{ name: 'set_title', description: 'Rename.', effect: 'write', enabled: true, parameters: { title: { type: 'string', required: true } }, run: ({ title }) => { document.getElementById('title').textContent = title; } }],
+      });
+      await agent.ask('Rename it');
+    }, textModel.url);
+    const t = await page.evaluate(() => ({ title: document.getElementById('title').textContent, shown: [...document.querySelectorAll('.aia-drawer .aia-msg.aia-assistant .aia-md')].pop().textContent }));
+    assert.equal(t.title, 'Via text');
+    assert.doesNotMatch(t.shown, /"name"/, 'the tool block is not shown to the user');
+    const [a, b] = textModel.chats().map((c) => c.body);
+    assert.equal(a.tools, undefined, 'text mode sends no tool definitions');
+    assert.match(a.messages[0].content, /fenced code block tagged `tool`[\s\S]*set_title\(title: string\)/);
+    assert.match(b.messages.at(-1).content, /<tool_results>\nset_title: Done\.\n<\/tool_results>/);
+  } finally {
+    await textModel.close();
+  }
+});
+
 /* --------------------------------------------------------------------------------- context size */
 
 test('Settings > Context shows the estimated tokens and warns for local models above the threshold', { skip, timeout: 60000 }, async () => {

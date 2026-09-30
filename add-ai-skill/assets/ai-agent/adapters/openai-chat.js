@@ -5,17 +5,39 @@
 //   models: GET {base}{modelsPath} -> { data:[{id}] }  (LM Studio native: { models:[{key, type, loaded_instances}] })
 // An empty model is sent without a `model` field: LM Studio then answers with whatever model is loaded.
 // Checked live against LM Studio 0.4 (reasoning arrives as `reasoning_content`).
+// Tools: body.tools [{type:'function', function:{name, description, parameters}}]; the reply streams
+//   delta.tool_calls [{index, id, function:{name, arguments (JSON, in pieces)}}]; the exchange goes back as an
+//   assistant message with tool_calls, then one {role:'tool', tool_call_id, content} per result.
 
 import { requestJson, requestStream, joinUrl, AiError } from '../core/transport.js';
 import { normalizeMessages } from '../core/messages.js';
+import { parseArguments } from '../core/tools.js';
 
 const auth = (key) => (key ? { Authorization: `Bearer ${key}` } : {});
 
-export function buildChat({ cfg, key, system, messages, maxTokens, temperature, stream = true }) {
+/** The current question's tool exchange, in chat-completions form. */
+export function toolTurnMessages(toolTurns = []) {
+  const out = [];
+  for (const turn of toolTurns) {
+    out.push({
+      role: 'assistant',
+      content: turn.text || '',
+      tool_calls: turn.calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.arguments || {}) } })),
+    });
+    for (const r of turn.results) out.push({ role: 'tool', tool_call_id: r.id, content: String(r.content ?? '') });
+  }
+  return out;
+}
+
+export function buildChat({ cfg, key, system, messages, maxTokens, temperature, stream = true, tools, toolTurns }) {
   const body = {
-    messages: [...(system ? [{ role: 'system', content: system }] : []), ...normalizeMessages(messages)],
+    messages: [...(system ? [{ role: 'system', content: system }] : []), ...normalizeMessages(messages), ...toolTurnMessages(toolTurns)],
     stream,
   };
+  if (tools?.length) {
+    body.tools = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
+    body.tool_choice = 'auto';
+  }
   if (cfg.model) body.model = cfg.model;
   if (Number.isFinite(maxTokens)) body[cfg.tokenField || 'max_tokens'] = maxTokens;
   if (Number.isFinite(temperature) && cfg.sendsTemperature !== false) body.temperature = temperature;
@@ -44,6 +66,11 @@ export function parseChunk(json) {
     const text = textOf(d.content);
     if (text) out.push({ type: 'text', text });
     if (typeof d.refusal === 'string' && d.refusal) out.push({ type: 'text', text: d.refusal });
+    for (const [i, tc] of (Array.isArray(d.tool_calls) ? d.tool_calls : []).entries()) {
+      if (!tc || typeof tc !== 'object') continue;
+      const args = tc.function?.arguments;
+      out.push({ type: 'tool', index: Number.isInteger(tc.index) ? tc.index : i, id: tc.id || '', name: tc.function?.name || '', args: typeof args === 'string' ? args : args && typeof args === 'object' ? JSON.stringify(args) : '' });
+    }
   }
   if (choice?.finish_reason === 'content_filter') throw new AiError('refused', 'The provider filtered the reply.');
   return out;
@@ -55,7 +82,23 @@ export function parseFull(json) {
   const msg = choice?.message;
   if (!msg || typeof msg !== 'object') throw new AiError('malformed', 'The reply had no message.');
   const reasoning = msg.reasoning_content ?? msg.reasoning;
-  return { text: textOf(msg.content) || msg.refusal || '', reasoning: typeof reasoning === 'string' ? reasoning : '', usage: usageOf(json.usage) };
+  const toolCalls = (Array.isArray(msg.tool_calls) ? msg.tool_calls : []).map((tc, i) => ({
+    id: tc.id || `call_${i + 1}`, name: tc.function?.name || '', arguments: parseArguments(tc.function?.arguments),
+  })).filter((c) => c.name);
+  return { text: textOf(msg.content) || msg.refusal || '', reasoning: typeof reasoning === 'string' ? reasoning : '', usage: usageOf(json.usage), toolCalls };
+}
+
+/** Assemble streamed tool-call fragments (keyed by index) into complete calls. */
+export function collectToolCalls(parts) {
+  const byIndex = new Map();
+  for (const p of parts) {
+    const cur = byIndex.get(p.index) || { id: '', name: '', args: '' };
+    if (p.id) cur.id = p.id;
+    if (p.name) cur.name = cur.name && cur.name !== p.name ? cur.name + p.name : p.name;
+    cur.args += p.args || '';
+    byIndex.set(p.index, cur);
+  }
+  return [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([i, c]) => ({ id: c.id || `call_${i + 1}`, name: c.name, arguments: parseArguments(c.args) })).filter((c) => c.name);
 }
 
 function usageOf(u) {
@@ -87,23 +130,26 @@ export function parseModels(json) {
 export const openaiChat = {
   protocol: 'openai-chat',
 
-  async stream({ cfg, key, system, messages, maxTokens, temperature, signal, onEvent, fetch }) {
-    const r = buildChat({ cfg, key, system, messages, maxTokens, temperature, stream: true });
+  async stream({ cfg, key, system, messages, maxTokens, temperature, signal, onEvent, fetch, tools, toolTurns }) {
+    const r = buildChat({ cfg, key, system, messages, maxTokens, temperature, stream: true, tools, toolTurns });
     let usage;
+    const parts = [];
     const res = await requestStream({ ...r, signal, timeoutMs: cfg.timeoutMs, secrets: [key], fetch }, ({ data }) => {
       if (!data || data === '[DONE]') return;
       let json;
       try { json = JSON.parse(data); } catch { return; }
       if (json.usage) usage = usageOf(json.usage);
-      for (const f of parseChunk(json)) onEvent(f);
+      for (const f of parseChunk(json)) {
+        if (f.type === 'tool') parts.push(f); else onEvent(f);
+      }
     });
     if (!res.streamed) {
       const full = parseFull(res.json);
       if (full.reasoning) onEvent({ type: 'reasoning', text: full.reasoning });
       if (full.text) onEvent({ type: 'text', text: full.text });
-      usage = full.usage;
+      return { usage: full.usage, toolCalls: full.toolCalls };
     }
-    return { usage };
+    return { usage, toolCalls: collectToolCalls(parts) };
   },
 
   async listModels({ cfg, key, signal, fetch }) {

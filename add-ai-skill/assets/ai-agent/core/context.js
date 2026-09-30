@@ -103,6 +103,7 @@ export class ContextManager {
     const meta = { ...p };
     delete meta.content;
     delete meta.view;
+    delete meta.tools;      // the page's tools go to the model as tools, not as page description
     try {
       const resolved = {};
       for (const [k, v] of Object.entries(meta)) resolved[k] = typeof v === 'function' ? await v() : v;

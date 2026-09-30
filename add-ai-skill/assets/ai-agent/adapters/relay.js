@@ -4,9 +4,12 @@
 //
 // Contract
 //   POST {relayUrl}  JSON { action:'chat', provider, baseUrl, model, apiKey, system, messages:[{role,content}],
-//                           maxTokens, temperature, reasoning }
+//                           maxTokens, temperature, reasoning, tools?, toolTurns?, turnId? }
 //     -> text/event-stream:  event: delta {text} | reasoning {text} | notice {message} | status {message}
+//                            | tool_call {id, name, arguments, signature?}
 //                            | error {message, code?, hints?} | done {usage?, provider?, model?}
+//   tools / toolTurns use the neutral formats of core/tools.js; the relay translates them for the provider. The tools
+//   themselves always run in the browser. `turnId` lets a public relay count one question per chain of tool steps.
 //     -> or JSON { text, reasoning?, usage? } | { error:{ message, code? } }
 //   POST {relayUrl}  JSON { action:'models', provider, baseUrl, apiKey } -> { ok, models:[{id,label,loaded}], error? }
 //   GET  {relayUrl}  -> { ok, relay, version, available, mode, providers, serverKeys, preset, reason? } (core/relay-probe.js)
@@ -18,13 +21,18 @@
 
 import { requestJson, requestStream, AiError } from '../core/transport.js';
 import { normalizeMessages } from '../core/messages.js';
+import { parseArguments } from '../core/tools.js';
 
 function relayHeaders(cfg) {
   const extra = typeof cfg.relayHeaders === 'function' ? cfg.relayHeaders() : cfg.relayHeaders;
   return { 'X-Requested-With': 'ai-agent-drawer', ...(extra && typeof extra === 'object' ? extra : {}) };
 }
 
-export function buildChat({ cfg, key, system, messages, maxTokens, temperature }) {
+export function buildChat({ cfg, key, system, messages, maxTokens, temperature, tools, toolTurns, turnId }) {
+  const extra = {};
+  if (tools?.length) extra.tools = tools;
+  if (toolTurns?.length) extra.toolTurns = toolTurns;
+  if (turnId) extra.turnId = String(turnId);
   return {
     url: cfg.relayUrl,
     headers: relayHeaders(cfg),
@@ -40,6 +48,7 @@ export function buildChat({ cfg, key, system, messages, maxTokens, temperature }
       maxTokens,
       temperature,
       reasoning: cfg.reasoning,
+      ...extra,
     },
   };
 }
@@ -47,16 +56,18 @@ export function buildChat({ cfg, key, system, messages, maxTokens, temperature }
 export const relay = {
   protocol: 'relay',
 
-  async stream({ cfg, key, system, messages, maxTokens, temperature, signal, onEvent, fetch }) {
+  async stream({ cfg, key, system, messages, maxTokens, temperature, signal, onEvent, fetch, tools, toolTurns, turnId }) {
     if (!cfg.relayUrl) throw new AiError('bad-endpoint', 'No relay address is configured (Settings > Model > Advanced).');
-    const r = buildChat({ cfg, key, system, messages, maxTokens, temperature });
+    const r = buildChat({ cfg, key, system, messages, maxTokens, temperature, tools, toolTurns, turnId });
     let usage;
+    const toolCalls = [];
     const res = await requestStream({ ...r, signal, timeoutMs: cfg.timeoutMs, secrets: [key], fetch, relay: true }, ({ event, data }) => {
       let json;
       try { json = JSON.parse(data); } catch { return; }
       if (event === 'delta') onEvent({ type: 'text', text: String(json.text ?? '') });
       else if (event === 'reasoning') onEvent({ type: 'reasoning', text: String(json.text ?? '') });
       else if (event === 'notice' || event === 'status') onEvent({ type: event, text: String(json.message ?? '') });
+      else if (event === 'tool_call' && json.name) toolCalls.push({ id: String(json.id || `relay_${toolCalls.length + 1}`), name: String(json.name), arguments: parseArguments(json.arguments), ...(json.signature ? { signature: String(json.signature) } : {}) });
       else if (event === 'error') throw new AiError(json.code || 'refused', `${String(json.message || 'The relay reported an error.')}${json.detail ? ` (${json.detail})` : ''}`, { hints: json.hints });
       else if (event === 'done') usage = json.usage;
     });
@@ -65,9 +76,10 @@ export const relay = {
       if (j.error) throw new AiError(j.error.code || 'refused', String(j.error.message || j.error));
       if (j.reasoning) onEvent({ type: 'reasoning', text: String(j.reasoning) });
       if (j.text) onEvent({ type: 'text', text: String(j.text) });
+      for (const c of Array.isArray(j.toolCalls) ? j.toolCalls : []) if (c?.name) toolCalls.push({ id: String(c.id || `relay_${toolCalls.length + 1}`), name: String(c.name), arguments: parseArguments(c.arguments) });
       usage = j.usage;
     }
-    return { usage };
+    return { usage, toolCalls };
   },
 
   async listModels({ cfg, key, signal, fetch }) {

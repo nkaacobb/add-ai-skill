@@ -1,5 +1,6 @@
 // Settings modal: Model (provider, address, model, key, connection test, relay/fallback), Agent (system prompt and
-// generation options) and Context (a read-only view of exactly what the application's hooks give the agent).
+// generation options), Tools (which of the application's tools the agent may use, confirmations, export as the app's
+// tool config) and Context (a read-only view of exactly what the application's hooks give the agent).
 // Edits are held in a draft and written on Save; "Load models" and "Test connection" use the draft, so a setup can
 // be tried before it is kept.
 
@@ -9,7 +10,8 @@ import { listModels, testConnection } from '../core/client.js';
 import { shortHash } from '../core/hash.js';
 import { estimateTokens } from '../core/messages.js';
 import { ICONS } from './icons.js';
-import { esc, h, nf, uid, isolateKeys } from './dom.js';
+import { esc, h, nf, uid, isolateKeys, copyText } from './dom.js';
+import { toolEnabled, toolAvailable, exportToolsConfig } from '../core/tools.js';
 
 /** Above this many estimated tokens (system prompt + snapshot + view state), Settings > Context warns for local models. */
 export const CONTEXT_WARN_TOKENS = 3000;
@@ -22,7 +24,7 @@ const STATE_TEXT = {
   off: 'Screen sharing is switched off (Agent tab).',
 };
 
-export function createSettingsPanel({ store, defaultPrompt, getContextInfo, relayHeaders, theme = 'auto', mount = document.body, title = 'AI agent', isolate = true, warnTokens = CONTEXT_WARN_TOKENS, relayInfo = () => null }) {
+export function createSettingsPanel({ store, defaultPrompt, getContextInfo, relayHeaders, theme = 'auto', mount = document.body, title = 'AI agent', isolate = true, warnTokens = CONTEXT_WARN_TOKENS, relayInfo = () => null, getTools = () => [], pageId = () => null }) {
   const id = uid('aia');
   const root = h(`
 <div class="aia-scope aia-modal" hidden${theme !== 'auto' ? ` data-aia-theme="${esc(theme)}"` : ''}>
@@ -38,6 +40,7 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     <div class="aia-tabs" role="tablist" aria-label="Settings sections">
       <button type="button" role="tab" class="aia-tab" data-tab="model" id="${id}-t-model" aria-controls="${id}-p-model" aria-selected="true">Model</button>
       <button type="button" role="tab" class="aia-tab" data-tab="agent" id="${id}-t-agent" aria-controls="${id}-p-agent" aria-selected="false">Agent</button>
+      <button type="button" role="tab" class="aia-tab" data-tab="tools" id="${id}-t-tools" aria-controls="${id}-p-tools" aria-selected="false" hidden>Tools</button>
       <button type="button" role="tab" class="aia-tab" data-tab="context" id="${id}-t-context" aria-controls="${id}-p-context" aria-selected="false">Context</button>
     </div>
     <div class="aia-modal-body">
@@ -105,6 +108,33 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
         </div>
       </section>
 
+      <section class="aia-panel" data-panel="tools" role="tabpanel" id="${id}-p-tools" aria-labelledby="${id}-t-tools" hidden>
+        <div class="aia-section">
+          <label class="aia-check"><input type="checkbox" data-f="toolsEnabled"><span>Let the agent use the application's tools</span></label>
+          <label class="aia-check"><input type="checkbox" data-f="confirmWrites"><span>Ask me before actions that change something</span></label>
+          <label class="aia-check"><input type="checkbox" data-f="confirmDestructive"><span>Ask me before destructive actions (delete, overwrite)</span></label>
+          <div class="aia-grid">
+            <label class="aia-field"><span class="aia-label">How tools are called</span><select data-f="toolMode">
+              <option value="auto">Automatic</option>
+              <option value="native">Tool calls (models trained for tool use)</option>
+              <option value="text">Text blocks (any model)</option>
+            </select></label>
+            <label class="aia-field"><span class="aia-label">Max tool steps per question</span><input type="number" min="1" max="30" step="1" data-f="maxToolSteps"></label>
+          </div>
+          <p class="aia-note">Reading tools run without asking. The agent only sees the tools that are turned on; for the others it can ask you to turn them on.</p>
+        </div>
+        <div class="aia-section">
+          <div class="aia-label-row"><span class="aia-label" data-f="toolCount">Tools</span>
+            <span class="aia-row"><button type="button" class="aia-btn aia-btn-ghost aia-btn-sm" data-act="toolsRead">Reading tools on</button><button type="button" class="aia-btn aia-btn-ghost aia-btn-sm" data-act="toolsAll">All on</button><button type="button" class="aia-btn aia-btn-ghost aia-btn-sm" data-act="toolsNone">All off</button></span>
+          </div>
+          <div class="aia-tool-list" data-f="toolList"></div>
+        </div>
+        <div class="aia-section">
+          <p class="aia-note">Your choices are saved in this browser. To make them the application's defaults for everyone, download the tool config and save it in the app as its tool config file (for example <code>ai-tools.json</code>, loaded with the <code>toolsConfig</code> option).</p>
+          <div class="aia-row aia-row-center"><button type="button" class="aia-btn" data-act="exportTools">Download ai-tools.json</button><button type="button" class="aia-btn aia-btn-ghost" data-act="copyTools">Copy JSON</button></div>
+        </div>
+      </section>
+
       <section class="aia-panel" data-panel="context" role="tabpanel" id="${id}-p-context" aria-labelledby="${id}-t-context" hidden>
         <div class="aia-section aia-ctx-status" data-f="ctxStatus"></div>
         <div class="aia-section aia-ctx-size" data-f="ctxSize"></div>
@@ -135,6 +165,7 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
   let closeTimer = null;
   let returnFocus = null;
   let listTicket = 0;
+  let toolChanges = {};     // tool on/off changes in this draft (only these are saved)
 
   /* ------------------------------------------------------------ rendering */
 
@@ -226,7 +257,51 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     f('historyMessages').value = draft.historyMessages;
     f('shareScreen').checked = draft.shareScreen;
     f('maxContextChars').value = draft.maxContextChars;
+    f('toolsEnabled').checked = draft.toolsEnabled;
+    f('confirmWrites').checked = draft.confirmWrites;
+    f('confirmDestructive').checked = draft.confirmDestructive;
+    f('toolMode').value = draft.toolMode;
+    f('maxToolSteps').value = draft.maxToolSteps;
+    toolChanges = {};
+    renderTools();
     setStatus('');
+  }
+
+  /* ------------------------------------------------------------------ tools */
+
+  const toolOn = (t) => (Object.prototype.hasOwnProperty.call(toolChanges, t.name) ? toolChanges[t.name] : toolEnabled(t, draft));
+
+  function renderTools() {
+    const tools = getTools();
+    root.querySelector('[data-tab="tools"]').hidden = !tools.length;
+    if (!tools.length || !draft) return;
+    const here = pageId();
+    const groups = new Map();
+    for (const t of tools) {
+      const g = t.group || (t.pages.length ? `Page: ${t.pages.join(', ')}` : 'Whole application');
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(t);
+    }
+    const on = tools.filter(toolOn).length;
+    f('toolCount').textContent = `Tools · ${on} of ${tools.length} on`;
+    const effectLabel = { read: 'reads', write: 'changes', destructive: 'destructive' };
+    f('toolList').innerHTML = [...groups.entries()].map(([g, list]) => `<div class="aia-tool-group"><h4>${esc(g)}</h4>${list.map((t) => `
+      <label class="aia-tool-row">
+        <input type="checkbox" data-tool="${esc(t.name)}"${toolOn(t) ? ' checked' : ''}>
+        <span class="aia-tool-main"><span class="aia-tool-name">${esc(t.title)} <code>${esc(t.name)}</code></span><span class="aia-tool-desc">${esc(t.description)}</span></span>
+        <span class="aia-tool-tags"><span class="aia-badge aia-badge-${esc(t.effect)}">${esc(effectLabel[t.effect] || t.effect)}</span>${toolAvailable(t, here) ? '<span class="aia-badge aia-badge-here">on this screen</span>' : ''}</span>
+      </label>`).join('')}</div>`).join('');
+  }
+
+  function setAllTools(pred) {
+    for (const t of getTools()) toolChanges[t.name] = pred(t);
+    renderTools();
+  }
+
+  function toolsJson() {
+    const next = collect();
+    const merged = { ...next, toolStates: { ...(draft.toolStates || {}), ...toolChanges } };
+    return JSON.stringify(exportToolsConfig(getTools(), merged), null, 2);
   }
 
   const num = (name) => {
@@ -253,6 +328,12 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
       shareScreen: f('shareScreen').checked,
       maxContextChars: Math.round(num('maxContextChars') ?? 0),
       rememberKeys: f('rememberKeys').checked,
+      toolsEnabled: f('toolsEnabled').checked,
+      confirmWrites: f('confirmWrites').checked,
+      confirmDestructive: f('confirmDestructive').checked,
+      toolMode: f('toolMode').value,
+      maxToolSteps: Math.round(num('maxToolSteps') ?? 0),
+      toolStates: { ...toolChanges },
     };
     // An empty address means "the provider default". An empty model is kept: it is a real choice ("whatever is
     // loaded" for LM Studio) and must override a model the application set as its default.
@@ -376,13 +457,14 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     const system = estimateTokens(info.system);
     const snap = info.hasContent && info.share ? estimateTokens(info.snapshot?.text) : 0;
     const view = info.share ? estimateTokens(info.viewText) : 0;
-    const total = system + snap + view;
+    const tools = estimateTokens(info.toolsJson || '');
+    const total = system + snap + view + tools;
     const relay = relayInfo();
     const local = settings.transport === 'relay' ? provider(relay?.preset?.provider || settings.provider).kind !== 'cloud' : p.kind !== 'cloud';
     const warn = local && total > warnTokens;
     f('ctxSize').classList.toggle('aia-ctx-warn', warn);
     f('ctxSize').innerHTML = `<h3 class="aia-h3">Size</h3>`
-      + `<p class="aia-note">First question of a chat: <strong>≈ ${nf(total)} tokens</strong> before the question itself — system prompt ≈ ${nf(system)}, screen snapshot ≈ ${nf(snap)}${view ? `, view state ≈ ${nf(view)}` : ''}. The reply needs room on top (up to ${nf(settings.maxOutputTokens)} tokens: Agent tab). Estimated at 4 characters per token.</p>`
+      + `<p class="aia-note">First question of a chat: <strong>≈ ${nf(total)} tokens</strong> before the question itself — system prompt ≈ ${nf(system)}, screen snapshot ≈ ${nf(snap)}${view ? `, view state ≈ ${nf(view)}` : ''}${tools ? `, tool definitions ≈ ${nf(tools)}` : ''}. The reply needs room on top (up to ${nf(settings.maxOutputTokens)} tokens: Agent tab). Estimated at 4 characters per token.</p>`
       + (warn ? `<p class="aia-note aia-warn-note">Local models often run with a 4,096-token context window by default (LM Studio's Context Length when loading a model, Ollama's num_ctx). This first message alone is close to or over that, so replies may be cut off or fail. Load the model with at least 8k context (16k or more for thinking models), or make the app context and screen content leaner (Max screen content in the Agent tab).</p>` : '');
   }
 
@@ -390,6 +472,7 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     currentTab = name;
     for (const tab of root.querySelectorAll('[data-tab]')) tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
     for (const panel of root.querySelectorAll('[data-panel]')) panel.hidden = panel.dataset.panel !== name;
+    if (name === 'tools') renderTools();
     root.querySelector('[data-f="status"]').hidden = name === 'context';
     act('save').hidden = name === 'context';
     act('resetAll').hidden = name === 'context';
@@ -434,6 +517,21 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     else if (a === 'test') runTest();
     else if (a === 'resetUrl') { f('baseUrl').value = provider(formProvider).baseUrl; syncProviderText(); }
     else if (a === 'resetPrompt') f('systemPrompt').value = defaultPrompt();
+    else if (a === 'toolsAll') setAllTools(() => true);
+    else if (a === 'toolsNone') setAllTools(() => false);
+    else if (a === 'toolsRead') setAllTools((t) => t.effect === 'read');
+    else if (a === 'copyTools') { copyText(toolsJson()); setStatus('Tool config copied. Save it in the app as its tool config file.', 'ok'); }
+    else if (a === 'exportTools') {
+      const url = URL.createObjectURL(new Blob([toolsJson()], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'ai-tools.json';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      setStatus('Downloaded ai-tools.json. Save it in the app and load it with the toolsConfig option.', 'ok');
+    }
     else if (a === 'revealKey') {
       const showing = f('apiKey').type === 'text';
       f('apiKey').type = showing ? 'password' : 'text';
@@ -450,6 +548,13 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
   });
 
   f('baseUrl').addEventListener('input', syncProviderText);
+
+  f('toolList').addEventListener('change', (e) => {
+    const box = e.target.closest('[data-tool]');
+    if (!box) return;
+    toolChanges[box.dataset.tool] = box.checked;
+    renderTools();
+  });
 
   root.addEventListener('input', () => {
     clearTimeout(closeTimer);
@@ -483,6 +588,7 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     close,
     isOpen,
     refreshContext: () => { if (isOpen() && currentTab === 'context') renderContext(); },
+    refreshTools: () => { if (isOpen() && currentTab === 'tools') renderTools(); else root.querySelector('[data-tab="tools"]').hidden = !getTools().length; },
     destroy: () => { close(); detachKeys(); root.remove(); },
   };
 }

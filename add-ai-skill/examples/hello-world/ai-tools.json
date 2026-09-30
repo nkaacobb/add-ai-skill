@@ -1,0 +1,18 @@
+{
+  "$comment": "Hello World's default tool selection (loaded with the toolsConfig option). Users can change it in Settings > Tools; 'Download ai-tools.json' there writes this format.",
+  "toolsEnabled": true,
+  "confirmWrites": true,
+  "confirmDestructive": true,
+  "toolMode": "auto",
+  "maxToolSteps": 8,
+  "tools": {
+    "find_text": { "enabled": true, "effect": "read", "description": "Find every place a word or phrase occurs in the document." },
+    "get_selection": { "enabled": true, "effect": "read", "description": "The text the user has selected, and where the cursor is." },
+    "insert_text": { "enabled": true, "effect": "write", "description": "Insert text at the cursor, or at the start or end." },
+    "replace_text": { "enabled": true, "effect": "write", "description": "Replace a word or phrase everywhere in the document." },
+    "set_editor_settings": { "enabled": true, "effect": "write", "description": "Change the editor's font size and line wrapping." },
+    "rename_file": { "enabled": false, "effect": "write", "description": "Change the document's file name." },
+    "replace_document": { "enabled": false, "effect": "destructive", "description": "Replace the whole document with new text." },
+    "new_document": { "enabled": false, "effect": "destructive", "description": "Start a new, empty document." }
+  }
+}

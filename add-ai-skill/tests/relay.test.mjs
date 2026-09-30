@@ -234,6 +234,46 @@ function relaySuite(name, start, { skip = false } = {}) {
     } finally { await relay.close(); await upstream.close(); }
   });
 
+  test(`${name}: tools pass through (tool_call out, the exchange back), one question per chain of tool steps`, { skip, timeout: 30000 }, async () => {
+    const upstream = await startFakeUpstream({
+      respond: (body) => (body.messages.some((m) => m.role === 'tool')
+        ? { text: 'Filtered to open orders.' }
+        : { toolCalls: [{ id: 'call_1', name: 'filter_orders', arguments: { status: 'open' } }] }),
+    });
+    const relay = await start(publicConfig(upstream, tmp('data'), { limits: { perMinute: 2, maxToolSteps: 3 } }));
+    const tools = [
+      { name: 'filter_orders', description: 'Show only orders with this status.', parameters: { type: 'object', properties: { status: { type: 'string', enum: ['open', 'done'] } }, required: ['status'] } },
+      { name: 'refresh', description: 'Reload the list.', parameters: { type: 'object', properties: {} } },
+    ];
+    const post = (extra) => request(relay.url, { method: 'POST', headers: pageHeaders(relay.url), body: chatBody({ tools, ...extra }) });
+    try {
+      const r1 = await post({ turnId: 'turn-1' });
+      assert.equal(r1.status, 200, r1.text);
+      const call = r1.text.split('\n\n').find((b) => b.startsWith('event: tool_call'));
+      assert.ok(call, `a tool_call event:\n${r1.text}`);
+      assert.deepEqual(JSON.parse(call.split('data: ')[1]), { id: 'call_1', name: 'filter_orders', arguments: { status: 'open' } });
+      const sent1 = upstream.lastChat().body;
+      assert.equal(sent1.tools[0].function.name, 'filter_orders');
+      assert.equal(sent1.tool_choice, 'auto');
+      assert.deepEqual(sent1.tools[1].function.parameters.properties, {}, 'an empty properties object stays an object');
+
+      const toolTurns = [{ text: '', calls: [{ id: 'call_1', name: 'filter_orders', arguments: { status: 'open' } }, { id: 'call_2', name: 'refresh', arguments: {} }],
+        results: [{ id: 'call_1', name: 'filter_orders', content: '12 orders shown' }, { id: 'call_2', name: 'refresh', content: 'Done.' }] }];
+      const r2 = await post({ turnId: 'turn-1', toolTurns });
+      assert.equal(r2.status, 200, 'the next step of the same question is free');
+      assert.match(r2.text, /Filtered to open orders/);
+      const msgs = upstream.lastChat().body.messages;
+      const asst = msgs.find((m) => m.role === 'assistant' && m.tool_calls);
+      assert.deepEqual(asst.tool_calls.map((c) => [c.id, c.function.name, c.function.arguments]), [['call_1', 'filter_orders', '{"status":"open"}'], ['call_2', 'refresh', '{}']]);
+      assert.deepEqual(msgs.filter((m) => m.role === 'tool').map((m) => [m.tool_call_id, m.content]), [['call_1', '12 orders shown'], ['call_2', 'Done.']]);
+
+      assert.equal((await post({ turnId: 'turn-2' })).status, 200, 'a second question (2 of 2 per minute)');
+      assert.equal((await post({ turnId: 'turn-2', toolTurns })).status, 200, 'its tool step is free');
+      const forged = await post({ turnId: 'forged', toolTurns });
+      assert.equal(forged.status, 429, 'a "continuation" of an unknown question is counted, so it cannot bypass the limit');
+    } finally { await relay.close(); await upstream.close(); }
+  });
+
   test(`${name}: misconfiguration: generic for visitors, details only for this computer`, { skip, timeout: 30000 }, async () => {
     const relay = await start({ mode: 'public', preset: { provider: 'openai', models: ['gpt-x'] } });   // no key
     try {

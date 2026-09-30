@@ -91,6 +91,17 @@ export function snapshotBlock(snapshot) {
   return `<page_snapshot ${meta}>\n${body}\n</page_snapshot>`;
 }
 
+/**
+ * Earlier turns that used tools are sent as text: a one-line record of the actions before the answer. (Only the
+ * question being answered carries the full tool exchange, in the provider's own format — see core/tools.js.)
+ * actions: [{ call: 'filter_orders(status: "open")', status: 'ok'|'error'|'declined'|'off', summary? }]
+ */
+export function actionsLine(actions) {
+  if (!Array.isArray(actions) || !actions.length) return '';
+  const word = { ok: 'done', error: 'failed', declined: 'declined by the user', off: 'tool turned off', skipped: 'skipped' };
+  return `[Actions taken: ${actions.map((a) => `${a.call} → ${word[a.status] || a.status}${a.summary ? ` (${String(a.summary).slice(0, 120)})` : ''}`).join('; ')}]\n\n`;
+}
+
 export function supersededStub(snapshot) {
   return `[Page snapshot ${shortHash(snapshot.hash)} of "${snapshot.pageTitle || snapshot.pageId}" omitted here: a newer snapshot appears later in the conversation.]`;
 }
@@ -111,7 +122,7 @@ export function buildRequestMessages({ messages = [], historyMessages = DEFAULT_
   const lastIndex = windowed.length - 1;
 
   return windowed.map((m, i) => {
-    if (m.role !== 'user') return { role: 'assistant', content: String(m.content ?? '') };
+    if (m.role !== 'user') return { role: 'assistant', content: `${actionsLine(m.actions)}${String(m.content ?? '')}` };
     const parts = [];
     if (m.snapshot) {
       if (latest && latest.index === i) parts.push(snapshotBlock(m.snapshot));

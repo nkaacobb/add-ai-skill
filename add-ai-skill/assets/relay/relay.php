@@ -11,7 +11,11 @@ declare(strict_types=1);
  * The browser sends the conversation here; this file calls the provider with cURL and streams the reply back as
  * Server-Sent Events, in the contract of assets/ai-agent/adapters/relay.js:
  *   POST {action:'chat', provider, baseUrl, model, apiKey, system, messages:[{role,content}], maxTokens, temperature,
- *         reasoning}   -> text/event-stream: delta {text} | reasoning {text} | error {message, code} | done {…}
+ *         reasoning, tools?, toolTurns?, turnId?}
+ *         -> text/event-stream: delta {text} | reasoning {text} | tool_call {id, name, arguments} | error {message, code}
+ *            | done {…}
+ *   Tools (neutral formats, see assets/ai-agent/core/tools.js) are translated for the provider; they run in the
+ *   browser. A public relay counts one question per chain of tool steps (same turnId), up to limits.maxToolSteps.
  *   POST {action:'models', provider, baseUrl, apiKey} -> {ok, models:[{id,label,loaded}]} | {ok:false, error, code}
  *   GET  -> {ok, relay, version, available, mode, providers, serverKeys, preset, reason?}   (always 200)
  *
@@ -33,7 +37,8 @@ declare(strict_types=1);
  * PHP error log).
  */
 
-const AIA_RELAY_VERSION = '1.1.0';
+const AIA_RELAY_VERSION = '1.2.0';
+const AIA_TOOL_NAME = '/^[A-Za-z][A-Za-z0-9_-]{0,63}$/';
 
 /** Provider catalog — keep in step with assets/ai-agent/core/providers.js. */
 const AIA_PROVIDERS = [
@@ -122,6 +127,8 @@ function aia_config_defaults(string $mode): array
             'maxBodyBytes'    => $public ? 512 * 1024 : 4 * 1024 * 1024,
             'maxMessages'     => $public ? 40 : 400,
             'maxOutputTokens' => $public ? 4096 : 64000,
+            'maxTools'        => 64,                     // tool definitions per request
+            'maxToolSteps'    => $public ? 10 : 30,      // tool rounds per question
         ],
     ];
 }
@@ -397,7 +404,7 @@ function aia_data_dir(array $cfg): string
  * Count one question against the per-visitor (minute, day) and site-wide (day) limits. State lives in a locked JSON
  * file: no addresses and no conversation text, only salted hashes that change every day (UTC).
  */
-function aia_rate_limit(array $cfg): void
+function aia_rate_limit(array $cfg, string $turn = '', bool $continuation = false): void
 {
     $l = $cfg['limits'];
     if ($l['perMinute'] <= 0 && $l['perDay'] <= 0 && $l['siteDaily'] <= 0) {
@@ -419,7 +426,20 @@ function aia_rate_limit(array $cfg): void
             $state = ['day' => $day, 'salt' => bin2hex(random_bytes(16)), 'site' => 0, 'visitors' => []];
         }
         $id = substr(hash_hmac('sha256', aia_address_key((string) ($_SERVER['REMOTE_ADDR'] ?? '')), $state['salt']), 0, 20);
-        [$windowStart, $inWindow, $today] = $state['visitors'][$id] ?? [0, 0, 0];
+        $v = $state['visitors'][$id] ?? [0, 0, 0];
+        [$windowStart, $inWindow, $today] = $v;
+        $activeTurn = (string) ($v[3] ?? '');
+        $steps = (int) ($v[4] ?? 0);
+        $turnHash = $turn !== '' ? substr(hash_hmac('sha256', $turn, $state['salt']), 0, 12) : '';
+        if ($continuation && $turnHash !== '' && $turnHash === $activeTurn && $steps < max(1, $l['maxToolSteps'])) {
+            // The next tool step of a question already counted: free.
+            $state['visitors'][$id] = [$windowStart, $inWindow, $today, $activeTurn, $steps + 1];
+            ftruncate($fh, 0);
+            rewind($fh);
+            fwrite($fh, (string) json_encode($state));
+            fflush($fh);
+            return;
+        }
         if ($now - (int) $windowStart >= 60) {
             $windowStart = $now;
             $inWindow = 0;
@@ -435,7 +455,7 @@ function aia_rate_limit(array $cfg): void
             $wait = max(1, 60 - ($now - (int) $windowStart));
             throw new AiaRelayError(429, 'rate-limit', 'Too many questions in a row (limit ' . $l['perMinute'] . ' per minute). Try again in ' . $wait . ' s.', '', ['Retry-After' => (string) $wait]);
         }
-        $state['visitors'][$id] = [$windowStart, (int) $inWindow + 1, (int) $today + 1];
+        $state['visitors'][$id] = [$windowStart, (int) $inWindow + 1, (int) $today + 1, $turnHash, 0];
         $state['site'] = (int) $state['site'] + 1;
         ftruncate($fh, 0);
         rewind($fh);
@@ -572,6 +592,63 @@ function aia_messages(array $raw): array
     return $out;
 }
 
+/** JSON needs {} where PHP has an empty array (schemas' properties, call arguments). */
+function aia_obj(mixed $v): mixed
+{
+    return is_array($v) && $v === [] ? new stdClass() : $v;
+}
+
+/**
+ * Tools and this question's tool exchange from the request, checked and trimmed to the neutral formats.
+ * @return array{0: list<array<string, mixed>>, 1: list<array<string, mixed>>}
+ */
+function aia_tools(array $req, array $cfg): array
+{
+    $tools = is_array($req['tools'] ?? null) ? $req['tools'] : [];
+    $turns = is_array($req['toolTurns'] ?? null) ? $req['toolTurns'] : [];
+    if (count($tools) > $cfg['limits']['maxTools']) {
+        throw new AiaRelayError(413, 'budget', 'Too many tools in one request (' . count($tools) . ', limit ' . $cfg['limits']['maxTools'] . ').');
+    }
+    if (count($turns) > $cfg['limits']['maxToolSteps']) {
+        throw new AiaRelayError(413, 'budget', 'Too many tool steps for one question (limit ' . $cfg['limits']['maxToolSteps'] . '). Ask again to continue.');
+    }
+    $cleanTools = [];
+    foreach ($tools as $t) {
+        $name = is_array($t) ? (string) ($t['name'] ?? '') : '';
+        if (!preg_match(AIA_TOOL_NAME, $name)) {
+            throw new AiaRelayError(400, 'malformed', 'A tool has an invalid name.');
+        }
+        $p = is_array($t['parameters'] ?? null) ? $t['parameters'] : [];
+        $props = is_array($p['properties'] ?? null) ? $p['properties'] : [];
+        $schema = ['type' => 'object', 'properties' => aia_obj($props)];
+        if (is_array($p['required'] ?? null) && $p['required'] !== []) {
+            $schema['required'] = array_values(array_map('strval', $p['required']));
+        }
+        $cleanTools[] = ['name' => $name, 'description' => substr((string) ($t['description'] ?? ''), 0, 2000), 'parameters' => $schema];
+    }
+    $cleanTurns = [];
+    foreach ($turns as $t) {
+        if (!is_array($t)) {
+            continue;
+        }
+        $calls = [];
+        foreach ((is_array($t['calls'] ?? null) ? $t['calls'] : []) as $c) {
+            $n = is_array($c) ? (string) ($c['name'] ?? '') : '';
+            if (preg_match(AIA_TOOL_NAME, $n)) {
+                $calls[] = ['id' => substr((string) ($c['id'] ?? ''), 0, 128), 'name' => $n, 'arguments' => is_array($c['arguments'] ?? null) ? $c['arguments'] : [], 'signature' => (string) ($c['signature'] ?? '')];
+            }
+        }
+        $results = [];
+        foreach ((is_array($t['results'] ?? null) ? $t['results'] : []) as $r) {
+            if (is_array($r)) {
+                $results[] = ['id' => substr((string) ($r['id'] ?? ''), 0, 128), 'name' => (string) ($r['name'] ?? ''), 'content' => substr((string) ($r['content'] ?? ''), 0, 100000)];
+            }
+        }
+        $cleanTurns[] = ['text' => (string) ($t['text'] ?? ''), 'calls' => $calls, 'results' => $results];
+    }
+    return [$cleanTools, $cleanTurns];
+}
+
 function aia_check_messages(array $raw, array $cfg): void
 {
     if ($cfg['limits']['maxMessages'] > 0 && count($raw) > $cfg['limits']['maxMessages']) {
@@ -580,7 +657,7 @@ function aia_check_messages(array $raw, array $cfg): void
 }
 
 /** @return array{0: string, 1: array<string, mixed>} url and body */
-function aia_chat_request(array $t, array $req, array $cfg): array
+function aia_chat_request(array $t, array $req, array $cfg, array $tools = [], array $turns = []): array
 {
     $system = (string) ($req['system'] ?? '');
     $raw = is_array($req['messages'] ?? null) ? $req['messages'] : [];
@@ -595,7 +672,18 @@ function aia_chat_request(array $t, array $req, array $cfg): array
         if ($t['model'] === '') {
             throw new AiaRelayError(400, 'missing-model', 'Choose an Anthropic model in Settings.');
         }
+        foreach ($turns as $turn) {
+            $content = $turn['text'] !== '' ? [['type' => 'text', 'text' => $turn['text']]] : [];
+            foreach ($turn['calls'] as $c) {
+                $content[] = ['type' => 'tool_use', 'id' => $c['id'], 'name' => $c['name'], 'input' => aia_obj($c['arguments'])];
+            }
+            $messages[] = ['role' => 'assistant', 'content' => $content];
+            $messages[] = ['role' => 'user', 'content' => array_map(static fn (array $r): array => ['type' => 'tool_result', 'tool_use_id' => $r['id'], 'content' => $r['content']], $turn['results'])];
+        }
         $body = ['model' => $t['model'], 'max_tokens' => $maxTokens, 'messages' => $messages, 'stream' => true];
+        if ($tools !== []) {
+            $body['tools'] = array_map(static fn (array $x): array => ['name' => $x['name'], 'description' => $x['description'], 'input_schema' => $x['parameters']], $tools);
+        }
         if ($system !== '') {
             $body['system'] = $system;
         }
@@ -609,10 +697,26 @@ function aia_chat_request(array $t, array $req, array $cfg): array
         if ($t['model'] === '') {
             throw new AiaRelayError(400, 'missing-model', 'Choose a Gemini model in Settings.');
         }
+        $contents = array_map(static fn (array $m): array => ['role' => $m['role'] === 'assistant' ? 'model' : 'user', 'parts' => [['text' => $m['content']]]], $messages);
+        foreach ($turns as $turn) {
+            $parts = $turn['text'] !== '' ? [['text' => $turn['text']]] : [];
+            foreach ($turn['calls'] as $c) {
+                $part = ['functionCall' => ['name' => $c['name'], 'args' => aia_obj($c['arguments'])]];
+                if ($c['signature'] !== '') {
+                    $part['thoughtSignature'] = $c['signature'];
+                }
+                $parts[] = $part;
+            }
+            $contents[] = ['role' => 'model', 'parts' => $parts];
+            $contents[] = ['role' => 'user', 'parts' => array_map(static fn (array $r): array => ['functionResponse' => ['name' => $r['name'], 'response' => ['result' => $r['content']]]], $turn['results'])];
+        }
         $body = [
-            'contents' => array_map(static fn (array $m): array => ['role' => $m['role'] === 'assistant' ? 'model' : 'user', 'parts' => [['text' => $m['content']]]], $messages),
+            'contents' => $contents,
             'generationConfig' => ['maxOutputTokens' => $maxTokens, 'temperature' => $temperature],
         ];
+        if ($tools !== []) {
+            $body['tools'] = [['functionDeclarations' => array_map(static fn (array $x): array => ['name' => $x['name'], 'description' => $x['description'], 'parameters' => $x['parameters']], $tools)]];
+        }
         if ($system !== '') {
             $body['systemInstruction'] = ['parts' => [['text' => $system]]];
         }
@@ -620,7 +724,20 @@ function aia_chat_request(array $t, array $req, array $cfg): array
         return [aia_join($t['baseUrl'], $path), $body];
     }
 
+    foreach ($turns as $turn) {
+        $messages[] = ['role' => 'assistant', 'content' => $turn['text'], 'tool_calls' => array_map(
+            static fn (array $c): array => ['id' => $c['id'], 'type' => 'function', 'function' => ['name' => $c['name'], 'arguments' => (string) json_encode(aia_obj($c['arguments']), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]],
+            $turn['calls'],
+        )];
+        foreach ($turn['results'] as $r) {
+            $messages[] = ['role' => 'tool', 'tool_call_id' => $r['id'], 'content' => $r['content']];
+        }
+    }
     $body = ['messages' => array_merge($system !== '' ? [['role' => 'system', 'content' => $system]] : [], $messages), 'stream' => true];
+    if ($tools !== []) {
+        $body['tools'] = array_map(static fn (array $x): array => ['type' => 'function', 'function' => ['name' => $x['name'], 'description' => $x['description'], 'parameters' => $x['parameters']]], $tools);
+        $body['tool_choice'] = 'auto';
+    }
     if ($t['model'] !== '') {
         $body['model'] = $t['model'];
     }
@@ -634,7 +751,10 @@ function aia_chat_request(array $t, array $req, array $cfg): array
     return [aia_join($t['baseUrl'], $t['chat']), $body];
 }
 
-/** One SSE `data:` payload -> [['reasoning'|'text', string], …]. Throws on an error payload. */
+/**
+ * One SSE `data:` payload -> [['reasoning'|'text', string] | ['tool', {index, id, name, args, signature?}], …].
+ * Throws on an error payload.
+ */
 function aia_fragments(string $protocol, array $e): array
 {
     if (isset($e['error'])) {
@@ -644,6 +764,12 @@ function aia_fragments(string $protocol, array $e): array
     $out = [];
     if ($protocol === 'anthropic') {
         $d = $e['delta'] ?? null;
+        if (($e['type'] ?? '') === 'content_block_start' && ($e['content_block']['type'] ?? '') === 'tool_use') {
+            $out[] = ['tool', ['index' => (string) ($e['index'] ?? 0), 'id' => (string) ($e['content_block']['id'] ?? ''), 'name' => (string) ($e['content_block']['name'] ?? ''), 'args' => '']];
+        }
+        if (($e['type'] ?? '') === 'content_block_delta' && is_array($d) && ($d['type'] ?? '') === 'input_json_delta') {
+            $out[] = ['tool', ['index' => (string) ($e['index'] ?? 0), 'id' => '', 'name' => '', 'args' => (string) ($d['partial_json'] ?? '')]];
+        }
         if (($e['type'] ?? '') === 'content_block_delta' && is_array($d)) {
             if (($d['type'] ?? '') === 'text_delta' && isset($d['text'])) {
                 $out[] = ['text', (string) $d['text']];
@@ -658,6 +784,10 @@ function aia_fragments(string $protocol, array $e): array
             if (is_array($part) && isset($part['text']) && $part['text'] !== '') {
                 $out[] = [!empty($part['thought']) ? 'reasoning' : 'text', (string) $part['text']];
             }
+            if (is_array($part) && isset($part['functionCall']['name'])) {
+                $out[] = ['tool', ['index' => 'g' . uniqid('', true), 'id' => (string) ($part['functionCall']['id'] ?? ''), 'name' => (string) $part['functionCall']['name'],
+                    'args' => (string) json_encode(aia_obj($part['functionCall']['args'] ?? [])), 'signature' => (string) ($part['thoughtSignature'] ?? '')]];
+            }
         }
         return $out;
     }
@@ -670,8 +800,35 @@ function aia_fragments(string $protocol, array $e): array
         if (is_string($d['content'] ?? null) && $d['content'] !== '') {
             $out[] = ['text', $d['content']];
         }
+        foreach ((is_array($d['tool_calls'] ?? null) ? $d['tool_calls'] : []) as $i => $tc) {
+            if (!is_array($tc)) {
+                continue;
+            }
+            $args = $tc['function']['arguments'] ?? '';
+            $out[] = ['tool', ['index' => (string) ($tc['index'] ?? $i), 'id' => (string) ($tc['id'] ?? ''), 'name' => (string) ($tc['function']['name'] ?? ''),
+                'args' => is_string($args) ? $args : (string) json_encode($args)]];
+        }
     }
     return $out;
+}
+
+/** Add one streamed tool-call piece to the calls collected so far (keyed by the provider's index). */
+function aia_tool_piece(array &$calls, array $p): void
+{
+    $k = $p['index'];
+    if (!isset($calls[$k])) {
+        $calls[$k] = ['id' => '', 'name' => '', 'args' => '', 'signature' => ''];
+    }
+    if ($p['id'] !== '') {
+        $calls[$k]['id'] = $p['id'];
+    }
+    if ($p['name'] !== '') {
+        $calls[$k]['name'] = $calls[$k]['name'] !== '' && $calls[$k]['name'] !== $p['name'] ? $calls[$k]['name'] . $p['name'] : $p['name'];
+    }
+    $calls[$k]['args'] .= $p['args'];
+    if (($p['signature'] ?? '') !== '') {
+        $calls[$k]['signature'] = $p['signature'];
+    }
 }
 
 function aia_error_detail(string $body): string
@@ -809,14 +966,14 @@ function aia_models(array $t, array $cfg): never
     aia_json(200, ['ok' => false, 'code' => 'network', 'error' => aia_redact($lastError, $t['key'])]);
 }
 
-function aia_chat(array $t, array $req, array $cfg): void
+function aia_chat(array $t, array $req, array $cfg, array $tools = [], array $turns = []): void
 {
-    [$url, $body] = aia_chat_request($t, $req, $cfg);
+    [$url, $body] = aia_chat_request($t, $req, $cfg, $tools, $turns);
     $public = $cfg['mode'] === 'public';
     $keepalive = (float) $cfg['keepalive'];
     aia_begin_stream($cfg['timeout']);
 
-    $s = ['buffer' => '', 'status' => 0, 'errorBody' => '', 'produced' => false, 'streamError' => '', 'last' => microtime(true), 'gone' => false];
+    $s = ['buffer' => '', 'status' => 0, 'errorBody' => '', 'produced' => false, 'streamError' => '', 'last' => microtime(true), 'gone' => false, 'tools' => []];
 
     $ch = curl_init($url);
     curl_setopt_array($ch, [
@@ -874,6 +1031,10 @@ function aia_chat(array $t, array $req, array $cfg): void
                     try {
                         foreach (aia_fragments($t['protocol'], $event) as [$type, $text]) {
                             $s['produced'] = true;
+                            if ($type === 'tool') {
+                                aia_tool_piece($s['tools'], $text);
+                                continue;
+                            }
                             aia_sse($type === 'reasoning' ? 'reasoning' : 'delta', ['text' => $text]);
                             $s['last'] = microtime(true);
                         }
@@ -927,6 +1088,19 @@ function aia_chat(array $t, array $req, array $cfg): void
     if (!$s['produced']) {
         aia_stream_error(new AiaRelayError(502, 'malformed', $t['label'] . ' returned no content.'));
         return;
+    }
+    $n = 0;
+    foreach ($s['tools'] as $call) {
+        $n++;
+        if ($call['name'] === '') {
+            continue;
+        }
+        $args = json_decode($call['args'] !== '' ? $call['args'] : '{}', true);
+        $event = ['id' => $call['id'] !== '' ? $call['id'] : 'call_' . $n, 'name' => $call['name'], 'arguments' => is_array($args) ? aia_obj($args) : $call['args']];
+        if ($call['signature'] !== '') {
+            $event['signature'] = $call['signature'];
+        }
+        aia_sse('tool_call', $event);
     }
     aia_sse('done', ['provider' => $t['id'], 'model' => $t['model']]);
 }
@@ -990,10 +1164,11 @@ function aia_main(): void
             aia_models($target, $cfg);
         }
         aia_check_messages(is_array($req['messages'] ?? null) ? $req['messages'] : [], $cfg);   // before counting
+        [$tools, $turns] = aia_tools($req, $cfg);
         if ($cfg['mode'] === 'public') {
-            aia_rate_limit($cfg);
+            aia_rate_limit($cfg, substr((string) ($req['turnId'] ?? ''), 0, 64), $turns !== []);
         }
-        aia_chat($target, $req, $cfg);
+        aia_chat($target, $req, $cfg, $tools, $turns);
     } catch (AiaRelayError $e) {
         if ($e->detail !== '' && $e->status >= 500) {
             error_log('[ai-agent relay] ' . $e->detail);
