@@ -31,6 +31,7 @@ host app ──hooks──▶ ContextManager ──snapshot/hash──▶ conver
 | `core/client.js` | `resolveTarget`, `streamChat` (with fallback), `listModels`, `testConnection`. | no |
 | `core/relay-probe.js` | `probeRelay` (the relay's GET), `relayDefaults`, `adjustForRelay` (keeps saved settings usable). | no |
 | `core/blocks.js` | `parseBlockValues`: values from a fenced block, checked against an allowlisted schema, clamped. | no |
+| `core/tools.js` | Tools: definitions, JSON Schema, argument validation, on/off and availability, the TOOLS prompt section, text-mode blocks, `ai-tools.json` in/out. | no |
 | `core/transport.js` | `requestJson`, `requestStream` (idle timeout, abort), SSE parser, error codes + guidance, redaction. | no |
 | `core/messages.js`, `core/reasoning.js` | Transcript normalisation; `<think>` splitting. | no |
 | `adapters/*.js` | One per wire protocol: build request, parse stream chunks / whole replies, list models. | no |
@@ -60,7 +61,10 @@ run without a browser. What needs a browser (`ui/`) is covered by `tests/browser
 3. The user message is added with its receipt chip (Read the page / Page unchanged); the flag updates.
 4. `buildSystemPrompt()` = editable prompt + app context + page context + screen protocol + formatting rules.
 5. `buildRequestMessages()` = history window with the newest snapshot inlined, older ones stubbed, view state last.
-6. `streamChat()` → adapter → `requestStream()`; fragments arrive as `text` / `reasoning` events.
+6. `streamChat()` → adapter → `requestStream()`; fragments arrive as `text` / `reasoning` events. With tools, the
+   reply may end in tool calls: the drawer checks each (on? here? arguments?), asks the user where the settings say
+   so, runs the app's function, and sends the results — plus the screen, if it changed — back for another round,
+   until the model answers (`AgentDrawer.runModel`, `executeTool`).
 7. The drawer accumulates raw text, splits inline `<think>` blocks, and re-renders Markdown at most once per frame.
 8. On finish: the reply is stored, the chat persisted (without snapshot text), and the flag recomputed. On failure
    with no text: the question is removed from the transcript (so the sync state is unchanged) and the error is shown

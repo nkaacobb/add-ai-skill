@@ -1,6 +1,6 @@
 ---
 name: add-ai-skill
-description: Build a screen-aware AI agent into any web application - a chat drawer that slides out from the right, sees what the user sees (application context + page context + live screen content that is re-sent only when its hash changes, with a visible in-sync/changed flag), streams replies as rich Markdown, keeps saved chats, and has a settings panel for any LLM (LM Studio by default, Ollama, OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, any OpenAI-compatible server, or a PHP/Node relay with a production-ready public mode) with an editable system prompt. Use when the user asks to add, build or integrate an AI agent, AI assistant, chatbot, copilot panel, or "chat with what is on screen" into an app, or mentions the add-ai-skill skill or the AI agent drawer pattern. Vanilla ES modules with no build step and no dependencies; works with plain HTML, PHP, React, Vue, Svelte, Angular and Next.js.
+description: Build a screen-aware AI agent into any web application - a chat drawer that slides out from the right, sees what the user sees (application context + page context + live screen content that is re-sent only when its hash changes, with a visible in-sync/changed flag), can act in the app through tools discovered from its code (with confirmations and per-tool on/off settings), streams replies as rich Markdown, keeps saved chats, and has a settings panel for any LLM (LM Studio by default, Ollama, OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, any OpenAI-compatible server, or a PHP/Node relay with a production-ready public mode) with an editable system prompt. Use when the user asks to add, build or integrate an AI agent, AI assistant, chatbot, copilot panel, or "chat with what is on screen" into an app, or mentions the add-ai-skill skill or the AI agent drawer pattern. Vanilla ES modules with no build step and no dependencies; works with plain HTML, PHP, React, Vue, Svelte, Angular and Next.js.
 ---
 
 # add-ai-skill — the AI Agent Drawer
@@ -13,8 +13,9 @@ Build this pattern into the user's application:
    - **page** — which page/view is open and what it is for (system prompt)
    - **content** — the live screen content, fingerprinted with a hash; plus **view** — volatile UI state (cursor, selection, filters), sent each turn but never hashed
 3. **Context sync with a visible flag.** Before every question the runtime hashes the screen and compares it with the newest snapshot the model already has in the conversation. Same hash → send only the question. Different → attach a fresh snapshot. The flag (green *synced* / amber *changed* / blue *not read yet*) shows in the drawer and can be shown anywhere in the app.
-4. **Rich rendering.** Streaming, escape-first Markdown (headings, lists, task lists, tables, quotes, fenced code with Copy and app-specific buttons), a collapsible "thinking" panel.
-5. **Settings for any LLM.** Provider, address, model (with discovery), API key, connection test, relay/fallback, and an **editable system prompt**, all stored per app in the browser. LM Studio (`http://127.0.0.1:9000`, whatever model is loaded) is the default.
+4. **It can act.** Tools wrap the app's own functions (found by surveying its code): the model calls them, the user confirms changes, and every call shows in the chat. Settings > Tools has a checkbox per tool; the app ships its default selection as `ai-tools.json`.
+5. **Rich rendering.** Streaming, escape-first Markdown (headings, lists, task lists, tables, quotes, fenced code with Copy and app-specific buttons), a collapsible "thinking" panel.
+6. **Settings for any LLM.** Provider, address, model (with discovery), API key, connection test, relay/fallback, and an **editable system prompt**, all stored per app in the browser. LM Studio (`http://127.0.0.1:9000`, whatever model is loaded) is the default.
 
 Everything lives in this skill folder (the folder that contains this `SKILL.md`). You copy the runtime into the app and write only the app-specific integration. **Do not rewrite the runtime.**
 
@@ -26,8 +27,8 @@ Everything lives in this skill folder (the folder that contains this `SKILL.md`)
 | `assets/relay/relay.php` | Drop-in PHP relay (PHP 8.1+, curl): Apache/XAMPP, Nginx + PHP-FPM, `php -S`. Local-only by default; an explicit **public mode** (fixed preset, same-origin, rate limits, caps). Configured by a `.php` config file, so it is copied unchanged. |
 | `assets/relay/relay.config.example.php` | Every relay setting, documented. |
 | `assets/relay/relay.mjs` | Node relay with the same contract, modes and config (+ optional static server; zero dependencies). |
-| `examples/hello-world/` | **Reference integration**: a text editor (`app.js`) that loads its AI integration (`ai-agent-setup.js`) with `import()`, pure content builders (`content.js`, unit-tested), a status-bar sync flag, and code actions (insert/replace text, apply editor settings through the real controls). Read `ai-agent-setup.js` before integrating. |
-| `references/` | `api.md` (every option, method and host hook), `context-sync.md` (the protocol, real-time apps, content builders), `frameworks.md` (stack recipes, safe loading, keyboard shortcuts, modal dialogs, layout, change signals, small-model code actions), `providers.md` (LLMs, context size, keys, CORS, relays, Nginx/Apache deployment), `checklist.md` (verification + troubleshooting), `architecture.md`. |
+| `examples/hello-world/` | **Reference integration**: a text editor (`app.js`) that loads its AI integration (`ai-agent-setup.js`) with `import()`, pure content builders (`content.js`, unit-tested), eight tools over the editor's own functions (`ai-tools.js`) with their default selection (`ai-tools.json`), a status-bar sync flag, and code actions. Read `ai-agent-setup.js` and `ai-tools.js` before integrating. |
+| `references/` | `api.md` (every option, method and host hook), `tools.md` (**discovering and building the app's tools**, settings, `ai-tools.json`), `context-sync.md` (the protocol, real-time apps, content builders), `frameworks.md` (stack recipes, safe loading, keyboard shortcuts, modal dialogs, layout, change signals, small-model code actions), `providers.md` (LLMs, context size, keys, CORS, relays, Nginx/Apache deployment), `checklist.md` (verification + troubleshooting), `architecture.md`. |
 | `scripts/verify.mjs` | **Automated verification** in headless Edge/Chrome (Node 22+): console errors, hotkey, flag, typing, context size, layout at 3 widths with screenshots, and the read → change → re-read → "Page unchanged" loop. |
 | `tests/` | `node --test` suites: runtime, relays (Node + PHP, fake upstream), real-browser behaviour, the example's content builders. Run them if you ever change the runtime. |
 
@@ -38,10 +39,11 @@ Everything lives in this skill folder (the folder that contains this `SKILL.md`)
 Find out, and keep notes:
 
 - **Stack and entry points**: plain HTML/PHP templates, or a framework (React/Vite, Next.js, Vue, Svelte, Angular…). Where the root layout/shell is rendered.
-- **Production stack, up front**: which web server (Apache, Nginx, a Node server, static hosting/CDN), PHP or Node, whether long-running processes are allowed, and how development differs (e.g. XAMPP locally, Nginx + PHP-FPM in production). This decides the relay (step 8). Never plan on `.htaccess` or rewrites.
+- **Production stack, up front**: which web server (Apache, Nginx, a Node server, static hosting/CDN), PHP or Node, whether long-running processes are allowed, and how development differs (e.g. XAMPP locally, Nginx + PHP-FPM in production). This decides the relay (step 10). Never plan on `.htaccess` or rewrites.
 - **Where static assets are served from** (`public/`, `static/`, `assets/`, `wwwroot/`), or whether code is bundled from `src/`; how the app busts caches after a deploy.
 - **Every page/view/route** the user can be on, and **what each one shows**: which state/store/API data renders it (including Web Worker messages and typed arrays), what the user edits or selects there, and how often it changes (static, on edits, continuously — animation, simulation, live data).
 - **The header/toolbar** where an "Ask AI" button belongs, and the **main content container** that should make room for the drawer. Note fixed-width grid columns and wide toolbars (they need the layout recipe) and fixed-position elements.
+- **What the user can do on each page** — the action surface for tools: API client modules, store actions, service functions, the handlers behind buttons/menus/forms, navigation, and the controls with their real ranges. Classify each as read / write / destructive (`references/tools.md`).
 - **Global keyboard handlers** (`keydown` on window/document, hotkey libraries) and **modal dialogs** (`showModal()`, popovers, focus-trapped modals).
 - **Backend**: is there a server (PHP, Node, Python…)? Will the app be deployed beyond localhost? Is there auth/CSRF?
 - **Existing AI code** or an existing chat panel (do not build a second one; ask the user).
@@ -54,7 +56,8 @@ Before coding, draft this and show it to the user in a few lines (proceed unless
 - **App context**: name, purpose (1–2 sentences written from the README/UI, not invented), capabilities (what the app can do), limits (what it cannot do — this prevents the model from promising features that do not exist). Keep it **lean** — titles and lists, not full glossaries or manuals — and **generate it from the app's own data modules** (its list of views, tools, record types) rather than hand-written prose, so it stays true. App context + page purpose + snapshot + prompt easily reach 4–5k tokens, and local models often run with a 4k window.
 - **Per page**: `id`, `title`, `purpose`, **content** (exactly what data represents the screen: visible rows, the open record, the document text, form values, an open dialog…), **view** (selection, cursor, active tab, filters, sort), and **where the change signal comes from** (store subscription, fetch completion, worker messages, input events).
 - **System prompt**: the persona and answer rules for this domain (start from `DEFAULT_SYSTEM_PROMPT` and add domain rules, like the Hello World example does).
-- **Actions** worth adding to code blocks/replies (insert into editor, apply a filter or settings, open a record, copy as SQL…). Never auto-execute: the user clicks.
+- **Tool plan**: per page, the tools the agent may call — name, what it wraps (the app's own function, API call or control), effect (read / write / destructive), parameters with real ranges — and what is left out on purpose (payments, security settings, sending messages, bulk deletes). Ask which tools start **on**; the rest start off (still listed in Settings > Tools, and the model can ask to turn one on).
+- **Code/reply actions** for suggestions the user applies with a click (insert into editor, copy as SQL…).
 - **Transport**: direct from the browser (default; fine for local LLMs and personal tools) or through a relay (deployed apps, server-held keys, providers that block CORS) — `relayProbe` picks the relay automatically when it answers.
 
 ### 3. Install the runtime
@@ -94,6 +97,7 @@ import { createAiAgent, DEFAULT_SYSTEM_PROMPT } from '../ai-agent/ai-agent.js';
 import { store } from './store.js';                          // however the app holds its state
 import { buildItemsContent } from './ai-content.js';         // pure, unit-tested (step 5)
 import { VIEWS } from './views.js';                          // the app's own data, reused for the app context
+import { appTools } from './ai-tools.js';                    // the tools module (step 8)
 
 export function mountAgent() {
   const agent = createAiAgent({
@@ -119,6 +123,8 @@ export function mountAgent() {
     suggestions: ['Which items are below their reorder level?', 'Summarize this view'],
     defaults: { provider: 'lmstudio' },          // LM Studio at http://127.0.0.1:9000, loaded model
     // dialogs: 'dock',                          // if the app uses dialog.showModal() (step 1)
+    tools: appTools,                             // what the agent can do (step 8, references/tools.md)
+    toolsConfig: 'ai-tools.json',                // which tools are on by default
   });
   store.subscribe(() => agent.contextChanged());   // the change signal
   document.getElementById('ask-ai').hidden = false;
@@ -159,7 +165,18 @@ agent.onContextStatus((s) => { badge.dataset.state = s.state; badge.title = `AI 
 - **Layout**: if the shell has fixed-width columns or a wide header, add CSS under `html.aia-drawer-open` (`minmax(0, …)` columns, wrapping header actions; fixed elements use `--aia-push-width`). The dev-time warning (on for localhost) names what slides under the drawer.
 - **Theme**: override `--aia-*` variables on `.aia-scope` (wins in light and dark mode); badge colours/ring/position with `--aia-badge-*`; give a small text toggle right padding for its context dot.
 
-### 8. App-specific actions (optional)
+### 8. Build the tools
+
+Write one tools module (e.g. `ai-tools.js`) from the tool plan, following `references/tools.md`:
+
+- Each tool wraps a function the app **already has** (store action, API client call, service function) or drives the real control with `setControlValue` / `click()` when the logic lives in a handler. Never reimplement business logic, and never add a tool the UI does not offer the user.
+- Accurate `effect` (when unsure, the stronger one), short `description` in the user's words, parameters with the real ranges/options and `required`, `pages` / `when` for where it applies, and a short factual return value (counts, ids, new values, errors).
+- Register the catalog with `createAiAgent({ tools, toolsConfig: 'ai-tools.json' })` (page-only tools can go in `setPage({ tools })`), and write `ai-tools.json` with the user's choice of what starts on.
+- Unit-test the module with the app's functions mocked; then, with a model, ask for something each important tool does and check the chip, the confirmation card, the change in the app, and that turned-off tools produce the *Turn on* card.
+
+Confirmations are on by default for changes (Settings > Tools can switch them off); reading tools never ask. Tools run in the browser with the user's permissions; relays only pass them through.
+
+### 9. App-specific actions (optional)
 
 `codeActions` add buttons to fenced code blocks, `replyActions` to whole replies:
 
@@ -170,7 +187,7 @@ replyActions: [{ id: 'note', label: 'Save as note', run: (md) => notes.add(md) }
 
 Anything that changes data or runs commands must go through the app's normal confirmation UI. Tell the model about the buttons in the system prompt ("put SQL in a fenced `sql` block; the user can open it in the query tab"). For actions that apply **values** (settings, filters, parameters), assume a small local model will ignore the requested fence tag: validate the content in `when` with `parseBlockValues(block, { tags, schema })` (custom tag, or `json` when every key is known; lenient parsing; clamped to the control ranges) and apply through the app's real controls with `setControlValue(el, value)` — see Hello World's "Apply editor settings".
 
-### 9. Relay (only when needed)
+### 10. Relay (only when needed)
 
 Use a relay when the app is deployed beyond localhost, keys must stay on the server, or a provider blocks browser calls. Pick the one that matches **production** (step 1), copy it **unchanged**, and put everything app-specific in its config file:
 
@@ -181,7 +198,7 @@ Use a relay when the app is deployed beyond localhost, keys must stay on the ser
 
 Modes, contract, Nginx/Apache settings (buffering, timeouts, gzip, `open_basedir`, `real_ip`, CA bundles): `references/providers.md`.
 
-### 10. Verify
+### 11. Verify
 
 Run the app (use the project's own dev server; for static sites `node <skill>/assets/relay/relay.mjs --static <app-root>` works), then run the automated check:
 
@@ -189,20 +206,21 @@ Run the app (use the project's own dev server; for static sites `node <skill>/as
 node <skill>/scripts/verify.mjs http://127.0.0.1:8787/ --change "<js that changes what is on screen>"
 ```
 
-(`--no-llm` when no model is running.) It reports console errors, the hotkey and flag, typing a space in the composer, the context size, the layout at 1280/1366/1600 px with screenshots, and the read → change → re-read → "Page unchanged" loop. Then check by hand, in a browser if you can drive one:
+(`--no-llm` when no model is running.) It reports console errors, the hotkey and flag, typing a space in the composer, the context size, the tool catalog (running the reading tools), the layout at 1280/1366/1600 px with screenshots, and the read → change → re-read → "Page unchanged" loop. Then check by hand, in a browser if you can drive one:
 
 1. No console errors on load; the toggle (and `Ctrl+I`) opens the drawer; the page content moves aside and nothing slides under the drawer.
 2. **Settings > Context** shows the app context, the page context, the view state and the snapshot you intended — the fastest way to validate your hooks — and an estimated size that fits the target model.
 3. Ask a question: the user message shows **"Read the page · <title> · N chars · <hash>"** and the flag turns green.
 4. Change the content: the flag turns amber. Ask again: the page is re-read (new hash). Ask once more without changes: **"Page unchanged"**.
 5. Navigate to another page: the page context and snapshot follow.
-6. Type a space and letters in the composer (host shortcuts must not react); open a modal dialog and press the hotkey; dark mode and a narrow window look right.
+6. Tools: ask for an action (a chip, the confirmation card for changes, the app changes, the answer confirms); ask "which tools can you use?" (on and off listed); ask for a turned-off tool (the *Turn on* card). Settings > Tools lists every tool with its checkbox.
+7. Type a space and letters in the composer (host shortcuts must not react); open a modal dialog and press the hotkey; dark mode and a narrow window look right.
 
 If no LLM is reachable, say so and still verify the rest. Full checklist and fixes: `references/checklist.md`.
 
-### 11. Report
+### 12. Report
 
-Tell the user: which files you added/changed, the context plan per page, how to open it (button/`Ctrl+I`), how to configure the model (gear icon → Model; LM Studio needs its server started with CORS enabled and ≥ 8k context), the relay setup for production, and anything you could not verify.
+Tell the user: which files you added/changed, the context plan and the tool plan per page (which tools are on by default), how to open it (button/`Ctrl+I`), how to configure the model (gear icon → Model; LM Studio needs its server started with CORS enabled and ≥ 8k context), the relay setup for production, and anything you could not verify.
 
 ## Rules
 
@@ -210,7 +228,7 @@ Tell the user: which files you added/changed, the context plan per page, how to 
 - One agent instance per app, created client-side, loaded so a failure cannot break the app. `appId` unique per app.
 - Context is **what the user sees**, not the whole database, and never secrets.
 - Keep content deterministic, built by a tested pure function; volatile state goes in `view`.
-- The model never acts on its own: every action is a button the user clicks, applied through the app's own controls, and destructive actions keep the app's confirmation.
+- The agent acts only through tools that wrap the app's own functions, with the user's own permissions; changes are confirmed by default, destructive tools start off, and the app's own confirmations and server-side checks stay in place.
 - Do not modify unrelated parts of the application; keep the integration small and in one module plus per-page hooks.
 - Do not invent capabilities in the app context. List real limits.
 
@@ -220,13 +238,14 @@ Tell the user: which files you added/changed, the context plan per page, how to 
 createAiAgent(options) -> agent            options: appId, title, app, page, systemPrompt, welcome, suggestions,
                                                     toggle, push, hotkey, theme, width, watch, debounceMs,
                                                     debounceMaxMs, isolateKeys, dialogs, devWarnings, relayProbe,
-                                                    contextWarnTokens, codeActions, replyActions, defaults,
-                                                    relayHeaders, saveChats, resume, mount
+                                                    contextWarnTokens, tools, toolsConfig, codeActions,
+                                                    replyActions, defaults, relayHeaders, saveChats, resume, mount
 agent.setApp(app) · agent.setPage(page) · agent.setContent(fn) · agent.setView(fn)
 agent.contextChanged() · agent.refreshContext() · agent.getContextStatus() · agent.onContextStatus(fn)
 agent.rereadPage() · agent.systemPrompt() · agent.ready · agent.relayInfo()
+agent.tools.list() · register(defs) · unregister(name) · setEnabled(name, on) · run(name, args) · exportConfig()
 agent.open() · close() · toggle() · isOpen() · ask(text) · stop() · newChat() · openSettings(tab)
-agent.on('open'|'close'|'send'|'reply'|'error'|'context'|'settings'|'relay', fn)
+agent.on('open'|'close'|'send'|'reply'|'error'|'context'|'settings'|'relay'|'tool'|'tool-state', fn)
 agent.settings.get() · save(patch) · reset() · setKey(provider, key) · agent.destroy()
 fromDom(selector) -> content hook · parseBlockValues(block, {tags, schema}) · setControlValue(el, value) · probeRelay(url)
 ```

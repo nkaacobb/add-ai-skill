@@ -24,6 +24,7 @@
 //   toggle      the toggle is visible and closes/opens the drawer
 //   typing      a space and letters typed in the composer land in the composer (host shortcuts do not steal them)
 //   context     Settings > Context: estimated size of the first request
+//   tools       the tool catalog (on / off / usable here); runs the reading tools that need no arguments
 //   layout@W    at each width: no horizontal overflow, nothing under the drawer, the toggle still visible
 //   ask         "Read the page" receipt, flag synced                                         (needs a model)
 //   change      after --change the flag turns "dirty"; the next question re-reads the page  (needs a model)
@@ -187,6 +188,31 @@ async function main() {
     const size = await page.waitFor(() => { const b = document.querySelector('.aia-modal .aia-ctx-size'); return b && /tokens/.test(b.textContent) ? { text: b.querySelector('.aia-note')?.textContent || b.textContent, warn: b.classList.contains('aia-ctx-warn') } : null; }, { timeoutMs: 10000 }).catch(() => null);
     record('context', size ? (size.warn ? 'info' : 'pass') : 'skip', size ? `${size.text.replace(/\s+/g, ' ').slice(0, 220)}${size.warn ? ' — WARNING: large for a local model with a 4k context' : ''}` : 'Settings > Context size not found (runtime older than 1.1?)');
     await page.evaluate(() => document.querySelector('.aia-modal [data-act="close"]')?.click());
+
+    // Tools: the catalog, and the reading tools that need no arguments (they change nothing).
+    const tl = await page.evaluate(`(async () => {
+      let a = null; try { a = (${O.agent}) || null; } catch {}
+      if (!a || !a.tools) return null;
+      await a.ready;
+      const list = a.tools.list();
+      const runs = [];
+      for (const t of list.filter((x) => x.effect === 'read' && x.available)) {
+        try { runs.push([t.name, 'ok', String(await a.tools.run(t.name, {})).slice(0, 80)]); }
+        catch (e) { runs.push([t.name, /^Invalid arguments/.test(e.message) ? 'needs-args' : 'error', e.message]); }
+      }
+      return { list, runs };
+    })()`);
+    if (!tl) {
+      record('tools', 'skip', 'agent object not reachable (pass --agent)');
+    } else if (!tl.list.length) {
+      record('tools', 'info', 'no tools registered (the agent can only answer and suggest)');
+    } else {
+      const on = tl.list.filter((t) => t.enabled).length;
+      const here = tl.list.filter((t) => t.available).length;
+      const failed = tl.runs.filter((r) => r[1] === 'error');
+      const ran = tl.runs.filter((r) => r[1] === 'ok').map((r) => r[0]);
+      record('tools', failed.length ? 'fail' : 'pass', `${tl.list.length} tools (${on} on, ${tl.list.length - on} off, ${here} usable here); reading tools ran: ${ran.join(', ') || 'none without arguments'}${failed.length ? `; FAILED: ${failed.map((r) => `${r[0]}: ${r[2]}`).join('; ')}` : ''}`);
+    }
 
     // Layout at each width.
     for (const w of O.widths) {

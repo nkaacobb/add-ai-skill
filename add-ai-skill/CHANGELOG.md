@@ -4,6 +4,57 @@ All notable changes to the add-ai-skill skill (it builds the "AI agent drawer" i
 the skill instructions are versioned together: `VERSION` in `ai-agent.js`, `AIA_RELAY_VERSION` / `RELAY_VERSION` in
 the relays, and `package.json`.
 
+## 1.2.0 — the agent can act: tools
+
+The agent no longer only explains and suggests: it calls the application's own functions. All 1.1 options and
+methods keep working; an app without `tools` behaves exactly as before.
+
+### Skill workflow
+
+- Survey step: the app's **action surface** (API clients, store actions, services, handlers, controls with ranges).
+- Context plan: a **tool plan** per page (what each tool wraps, read / write / destructive, parameters, what is left
+  out), with the user choosing which tools start on.
+- New step "Build the tools" and `references/tools.md`: one tools module over the app's own functions, `ai-tools.json`
+  for the default selection, unit tests, and checks with a model.
+
+### Runtime
+
+- `tools` option, `page.tools`, `toolsConfig` (e.g. `'ai-tools.json'`), and `agent.tools` (`list`, `register`,
+  `unregister`, `setEnabled`, `run`, `exportConfig`); events `tool` and `tool-state`.
+- The tool loop: native tool calls for OpenAI-compatible servers (LM Studio, Ollama, OpenAI, DeepSeek, OpenRouter,
+  custom), Anthropic and Gemini; a text-block protocol for models without tool calling (`toolMode`); arguments
+  validated and clamped; results (and the screen, if it changed) sent back; up to `maxToolSteps` rounds.
+- Confirmations: write tools ask (*Run* / *Allow for this chat* / *Skip*), destructive tools always ask — both
+  switchable (`confirmWrites`, `confirmDestructive`). Reading tools never ask.
+- Turned-off tools stay known to the model: it can say so and ask with the built-in `request_tool`, which shows a
+  *Turn on* button; turning a tool on saves the choice.
+- **Settings > Tools**: a checkbox per tool (grouped, with its effect and availability), the switches, and
+  "Download ai-tools.json" to make the selection the app's default. Only choices that differ from the app's defaults
+  are stored.
+- Chips for every call in the reply; actions kept in saved chats and summarised in later requests.
+- Settings > Context counts the tool definitions in the size estimate; the Context tab's system prompt includes the
+  TOOLS section.
+- Some local models (seen with LM Studio + Qwen 3.5 9B) answer the step after a tool round only in their reasoning
+  channel: that reasoning is shown as the answer.
+
+### Relays (1.2.0)
+
+- `relay.php` and `relay.mjs` pass `tools` and `toolTurns` to the provider (all three protocols) and stream
+  `tool_call` events. Public mode counts one question per chain of tool steps (`turnId`) up to `limits.maxToolSteps`;
+  a forged continuation is counted. New limits `maxTools` (64) and `maxToolSteps` (public 10, local 30).
+
+### Tooling
+
+- `scripts/verify.mjs` reports the tool catalog and runs the reading tools that need no arguments.
+- Hello World: eight tools over the editor's functions (`ai-tools.js`) and `ai-tools.json`.
+- Tests: tool unit tests, adapter tool formats, relay tool pass-through (Node + PHP), the full drawer tool loop in a
+  real browser (confirmation, turn-on, text mode), Hello World's tools.
+
+### Upgrading from 1.1
+
+Re-copy `assets/ai-agent/` and the relay. Nothing else changes until you add `tools`. A 1.1 relay ignores tools, so
+upgrade the relay too if the app uses one.
+
 ## 1.1.0 — lessons from the first production integration
 
 The skill is now named **add-ai-skill** (was `ai-agent-drawer`): install it with the repository's

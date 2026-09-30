@@ -1,7 +1,8 @@
 # API reference
 
 `import { createAiAgent, fromDom, DEFAULT_SYSTEM_PROMPT } from './ai-agent/ai-agent.js'` and load `ai-agent/ai-agent.css`.
-Types: `assets/ai-agent/ai-agent.d.ts`. Runtime version: `VERSION` (1.1.0).
+Types: `assets/ai-agent/ai-agent.d.ts`. Runtime version: `VERSION` (1.2.0). Tools (the agent acting in the app):
+`tools.md`.
 
 ## createAiAgent(options) → agent
 
@@ -33,6 +34,8 @@ probe (if any) have been applied — questions wait for it automatically.
 | `devWarnings` | `'auto'` | Console warnings for integration problems: the pushed layout overflows/hides things under the drawer (checked after opening and on resize), a modal dialog makes the drawer inert. `'auto'` = on for `localhost`, `127.x`, `[::1]`, `*.localhost`, `*.test`, `*.local`, `file:`; `true`/`false` force. |
 | `relayProbe` | `false` | `true` (probe `defaults.relayUrl`), a URL, or `{ url, timeoutMs = 2500 }`: GET the relay at startup; if it answers `available`, use it (with its preset provider/model), else send requests directly. See "Relay probe". |
 | `contextWarnTokens` | `3000` | Settings > Context warns (local providers) when the first request is estimated above this. |
+| `tools` | `[]` | The app's tool catalog: `[{ name, title?, description, parameters?, effect: 'read'\|'write'\|'destructive', pages?, when?, group?, enabled?, timeoutMs?, run(args, ctx) }]`. The model calls them; see `tools.md`. Invalid definitions are skipped with a console error. |
+| `toolsConfig` | `null` | The app's default tool selection and switches (`ai-tools.json`): a URL, an object, or a (possibly async) function. Applied like `defaults` (questions wait for it). |
 | `codeActions` | `[]` | `[{ id, label, title?, when?(block), run(block, agent), doneLabel? }]` → buttons on fenced code blocks (`block = { language, code }`). Copy is built in. For values the app applies, see `parseBlockValues` and `setControlValue`. |
 | `replyActions` | `[]` | `[{ id, label, title?, run(markdown, agent), doneLabel? }]` → buttons under each reply. Copy is built in. |
 | `defaults` | `{}` | App defaults for any setting (see "Settings"). User choices override them. May be an object, a promise, or a (possibly async) function. |
@@ -58,6 +61,8 @@ agent.setPage({
 - `content` may return a string (sent as written) or JSON-able data (sent as sorted-key, 2-space JSON; key order never
   changes the hash). Async functions are fine. If it throws, the snapshot says the content could not be read.
 - `view` is sent inside `<view_state>` with every question and is limited to 2,000 characters.
+- `tools` (optional): tools that exist only on this page (same format as the `tools` option). They are sent as
+  tools, not as page description.
 - `setPage(null)` clears the page (flag shows *none*).
 - Write `content` as a pure, tested function of the app's state (`context-sync.md`, "Content builders").
 
@@ -81,7 +86,12 @@ agent.setPage({
 | `systemPrompt()` | Resolves to the full system prompt as it would be sent now. |
 | `ready` | Promise resolving to the agent once async `defaults` and `relayProbe` are applied (immediately without them). |
 | `relayInfo()` | What the relay probe found (`{ url, available, mode, preset, providers, serverKeys, reason }`), or `null`. |
-| `on(event, fn)` | Events: `open` (`{}`, or `{ resumed: true }` — see below), `close`, `send` `{text, attached, reason, hash}`, `reply` `{text, provider, model, stopped}`, `error` `{error}`, `context` (status), `settings` (settings), `relay` (relay info). Returns unsubscribe. |
+| `tools.list()` | Every tool known now (app-wide + this page): `{ name, title, description, effect, group, pages, enabled, available }`. |
+| `tools.register(defs)`, `tools.unregister(name)` | Add/replace or remove app-wide tools at runtime. |
+| `tools.setEnabled(name, on)` | Turn a tool on/off for this user (saved like Settings > Tools). |
+| `tools.run(name, args)` | Run a tool directly (validated arguments, no confirmation, ignores on/off) — for tests and scripted checks. Resolves to the text the model would receive. |
+| `tools.exportConfig()` | The current selection as an `ai-tools.json` object. |
+| `on(event, fn)` | Events: `open` (`{}`, or `{ resumed: true }` — see below), `close`, `send` `{text, attached, reason, hash}`, `reply` `{text, provider, model, stopped, actions}`, `error` `{error}`, `context` (status), `settings` (settings), `relay` (relay info), `tool` `{name, args, status: 'ok'\|'error'\|'declined'\|'off'\|'skipped', result}`, `tool-state` `{name, enabled}`. Returns unsubscribe. |
 | `settings.get()`, `settings.save(patch)`, `settings.reset()`, `settings.setKey(provider, key)` | Programmatic settings. |
 | `destroy()` | Remove everything the agent added. |
 
@@ -126,6 +136,12 @@ if (agent.isOpen()) onOpen();          // safe either way: make onOpen idempoten
 | `shareScreen` | `true` | Off = the model gets app/page context but not the content. |
 | `timeoutSec` | `120` | Idle timeout (resets while tokens or relay keepalives arrive). |
 | `rememberKeys` | `false` | Keys in localStorage instead of sessionStorage. |
+| `toolsEnabled` | `true` | Master switch for tools (Settings > Tools). |
+| `toolMode` | `'auto'` | `'native'` tool calls, `'text'` tool blocks (any model), `'auto'` = native, text if the server refuses tools. |
+| `confirmWrites` | `true` | Ask before tools with `effect: 'write'` ("Allow for this chat" skips it for that tool). |
+| `confirmDestructive` | `true` | Ask before tools with `effect: 'destructive'`. |
+| `maxToolSteps` | `8` | Tool rounds per question. |
+| `toolStates` | `{}` | `{ toolName: true \| false }`, merged over `toolsConfig` and each tool's `enabled`. Only differences from the app defaults are stored. |
 
 Layering: built-in defaults < `defaults` (applied late when async / probed) < what the user saved.
 

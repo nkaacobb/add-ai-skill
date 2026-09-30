@@ -41,6 +41,11 @@ lists everything. Exit code 1 when a check fails. It does not replace looking at
 - [ ] Ask → receipt "Read the page · … · hash", flag green. Change data → flag amber. Ask → re-read (new hash).
       Ask again unchanged → "Page unchanged".
 - [ ] Navigate → page context and snapshot follow the new page.
+- [ ] **Tools**: the catalog wraps the app's own functions (no reimplemented logic, nothing the UI does not offer);
+      effects are right (when unsure, the stronger one); parameters carry the real ranges; `pages`/`when` match where
+      they work; `ai-tools.json` turns on only what the user chose. With a model: an action shows a chip, write tools
+      ask first, the app changes, the answer confirms; "which tools can you use?" lists on and off; a turned-off tool
+      produces the *Turn on* card. The tools module has unit tests.
 - [ ] Code/reply actions (if any) do what they say, show up even when a small model uses a generic fence tag
       (`json`), clamp values, apply through the app's real controls, and never bypass the app's confirmations.
 - [ ] Light and dark mode both look right; theme overrides on `.aia-scope` apply in both; the toggle's context dot
@@ -72,6 +77,10 @@ A quick console check: `agent.getContextStatus()`, `await agent.systemPrompt()`,
 | Theme overrides work in light mode only | A pre-1.1 stylesheet (dark rules had higher specificity). Update `ai-agent.css`; 1.1 wraps its theme rules in `:where()`. |
 | The context dot covers the toggle's label / has a white ring on a dark header | Give the toggle `padding-right`, or move/recolour the dot with `--aia-badge-top/-right/-size/-ring`. |
 | A code action's button does not appear | The model used another fence tag (often `json`). Make `when` validate the content (`parseBlockValues` accepts `json` when every key is known), and restate the tag in the system prompt. |
+| The model never calls the tools (answers in prose instead) | Its server/model has no native tool calling: Settings > Tools > "Text blocks". Check the tools are on (Settings > Tools) and available on this page (`pages`/`when`), and that descriptions say what each tool is for. |
+| The answer after a tool round is empty, or only in the Thinking panel | Some local models answer the step after tools only in their reasoning channel; 1.2 shows that reasoning as the answer. Otherwise raise *Max reply tokens*. |
+| "Stopped after N tool steps" | The model kept calling tools: raise Settings > Tools > Max tool steps, or give tools clearer results (counts, "done", errors). |
+| A tool is called with wrong values | Tighten its schema (`enum`, `min`/`max`, `required`) and description; arguments are clamped, and errors go back to the model. |
 | Model says it cannot see the page | Settings > Agent > "Share what is on screen" is off, or the page has no `content` hook (flag shows *none*). Check Settings > Context. |
 | Answers about the wrong page | `setPage` not called on navigation, or called with the previous page's hooks. |
 | Open-time setup does not run after a reload | `resume` reopened the drawer during `createAiAgent()`. Register `on('open')` in the same tick (it is replayed with `{ resumed: true }`), or check `agent.isOpen()` after creating the agent. |
@@ -101,4 +110,4 @@ From the skill folder: `node --test` (or `npm test`). No model needed.
 - `tests/browser.test.mjs` — headless Edge/Chrome (`AIA_BROWSER` to choose, `AIA_SKIP_BROWSER=1` to skip): key
   isolation, dialog docking, the layout warning, theme overrides, resume, `setControlValue`, the probe on a static
   server, the context-size warning.
-- `tests/example.test.mjs` — the Hello World content builders (the tests every integration should have).
+- `tests/example.test.mjs` — the Hello World content builders and tools (the tests every integration should have).

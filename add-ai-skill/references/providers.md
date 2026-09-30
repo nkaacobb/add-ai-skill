@@ -15,6 +15,10 @@
 
 Models are never hard-coded: "Load models" asks the provider, and any id can be typed. Placeholders are examples.
 
+**Tool calling** (`tools.md`): native for all three protocols (OpenAI-compatible `tools`/`tool_calls`, Anthropic
+`tool_use`, Gemini `functionCall`). Local models need to be trained for tool use (LM Studio shows it per model);
+otherwise use Settings > Tools > "Text blocks", which works with any model.
+
 Each provider keeps its own address and model (`profiles`), so switching back and forth does not lose settings.
 A **fallback provider** can be set (Settings > Model > Advanced): used only if the primary cannot be reached and no
 text has arrived yet; a notice in the reply says so.
@@ -80,7 +84,7 @@ otherwise), or `defaults: { transport: 'relay', relayUrl }`, or in Settings > Mo
 | Who | Requests from the relay's own computer only (a request that came through a proxy — `X-Forwarded-For`, `Forwarded`… — is not local). `allowRemote: true` / `--allow-remote` opens it up: then put `authorize` in front. | Anyone who can load the app. |
 | Provider / model / key | What the user chose; the user's key, or the server's. Local providers may only target loopback/LAN addresses (`allowAnyUpstream`). | Only the configured `preset`: other providers or models are refused with a clear message; visitor keys are never forwarded. |
 | Origin | – | Same-origin enforced: `X-Requested-With: ai-agent-drawer` required, `Origin` must be the relay's own host (or in `allowedOrigins`), `Sec-Fetch-Site` must be `same-origin`. No CORS headers, ever. |
-| Limits | Body 4 MB. | Per visitor per minute and per day, plus a site-wide daily cap (HTTP 429 + `Retry-After`); body, message-count and reply-token caps. |
+| Limits | Body 4 MB; 64 tools and 30 tool steps per question. | Per visitor per minute and per day, plus a site-wide daily cap (HTTP 429 + `Retry-After`) — one question per chain of tool steps (`turnId`), up to `maxToolSteps` (10); body, message-count, reply-token and tool (64) caps. |
 | Errors | Full details. | Visitors get generic messages; configuration details go only to requests from the server itself and to the error log. |
 
 Rate-limit state is a small JSON file (PHP: `flock`ed; Node: in memory, mirrored to the file when `dataDir` is set)
@@ -124,13 +128,17 @@ GET {relayUrl}   (always 200, so a probe never logs an error)
 POST {relayUrl}   Content-Type: application/json   X-Requested-With: ai-agent-drawer (+ relayHeaders)
 { "action": "chat", "provider": "anthropic", "baseUrl": "…", "model": "…", "apiKey": "" ,
   "system": "…", "messages": [{ "role": "user", "content": "…" }], "maxTokens": 4096, "temperature": 0.4,
-  "reasoning": "show" }
+  "reasoning": "show",
+  "tools": [{ "name": "…", "description": "…", "parameters": { JSON Schema } }],                       (optional)
+  "toolTurns": [{ "text": "…", "calls": [{ "id", "name", "arguments": {} }], "results": [{ "id", "name", "content" }] }],
+  "turnId": "…" }
 → 200 text/event-stream
   : open                                   (comment: flushes the headers through every layer)
   : keepalive                              (comment, every ~15 s while the model is silent)
   event: delta      data: {"text":"…"}
   event: reasoning  data: {"text":"…"}
   event: notice     data: {"message":"…"}
+  event: tool_call  data: {"id":"…","name":"…","arguments":{…}}     (the tools run in the browser)
   event: error      data: {"message":"…","code":"auth|missing-model|bad-endpoint|network|timeout|rate-limit|refused|budget|malformed"}
   event: done       data: {"provider":"…","model":"…","usage":{…}}
 → 4xx/5xx application/json {"ok":false,"error":{"message":"…","code":"…","detail"?:"…"}}   (+ Retry-After on 429)

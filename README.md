@@ -4,7 +4,8 @@ This repository packages an AI agent pattern so any app can have it, and so Clau
 build it into an app on request:
 
 > **Application X has an AI agent that slides out from the right, sees what is on the current screen
-> (plus what the app and the page are for), answers in rich Markdown, and can use any LLM — LM Studio by default.**
+> (plus what the app and the page are for), can act in the app through its own functions (you confirm changes and
+> choose which tools are on), answers in rich Markdown, and can use any LLM — LM Studio by default.**
 
 | | |
 | --- | --- |
@@ -37,9 +38,11 @@ Open the app and ask your agent:
 - **Codex** — `$add-ai-skill build an AI agent into this app`
 - **GitHub Copilot** (agent mode) — `/add-ai-skill build an AI agent into this app`
 
-The skill tells the agent to survey the app (including its production stack, keyboard shortcuts, modal dialogs and
-layout), propose a context plan, copy the runtime in, mount one agent, wire `setPage` / `content` / `view` for every
-page, signal changes, fit the host app, optionally add actions and a relay, and verify with `scripts/verify.mjs`.
+The skill tells the agent to survey the app (including its production stack, keyboard shortcuts, modal dialogs,
+layout, and everything the user can do on each page), propose a context plan and a **tool plan**, copy the runtime
+in, mount one agent, wire `setPage` / `content` / `view` for every page, signal changes, fit the host app, build the
+tools over the app's own functions (with `ai-tools.json` choosing which are on), optionally add a relay, and verify
+with `scripts/verify.mjs`.
 You can steer it, e.g. "…and put the Ask AI button next to the search box" or "…use the PHP relay in public mode".
 
 ## Run the Hello World app
@@ -58,7 +61,9 @@ You can steer it, e.g. "…and put the Ask AI button next to the search box" or 
 Then try it: click **Ask AI** (or `Ctrl+I`) and ask "Proofread this" — your message shows **Read the page · Editor ·
 N chars · hash** and the status bar flag turns green. Edit the text: the flag turns amber. Ask again: the page is
 re-read; ask once more without editing: **Page unchanged**. Ask "make the text bigger": the agent answers with an
-editor-settings block and an **Apply editor settings** button. Click the flag to see exactly what the AI receives
+editor-settings block and an **Apply editor settings** button. Ask "fix the spelling mistakes": the agent calls its
+`replace_text` tool and asks you to confirm before the document changes. Ask "rename the file to notes.txt": that
+tool is off by default, so it offers a **Turn on** button first. **Settings → Tools** has a checkbox per tool. Click the flag to see exactly what the AI receives
 (Settings → Context, including the estimated token size).
 
 ## How it works (short version)
@@ -88,7 +93,8 @@ add-ai-skill/
     ui/                    drawer, settings modal, markdown, resize, dialog docking, layout check
   assets/relay/            relay.php (PHP 8.1+) · relay.mjs (Node) · relay.config.example.php — copied unchanged, configured by a file
   examples/hello-world/    the demo: app.js (the editor) · ai-agent-setup.js (the integration) · content.js (pure, tested)
-  references/              api · context-sync · frameworks · providers · checklist · architecture
+                           · ai-tools.js (8 tools) · ai-tools.json (which are on)
+  references/              api · tools · context-sync · frameworks · providers · checklist · architecture
   scripts/verify.mjs       checks an integration in headless Edge/Chrome (scripts/lib/cdp.mjs is its driver)
   tests/                   node --test: runtime · relays (Node + PHP) · real browser · example
   package.json             npm test · npm run demo · npm run verify

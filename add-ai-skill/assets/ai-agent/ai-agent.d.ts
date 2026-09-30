@@ -31,6 +31,67 @@ export interface PageContext {
   content?: Hook<unknown>;
   /** Volatile UI state (cursor, selection, scroll, active tab). Sent with every question; NOT fingerprinted. */
   view?: Hook<unknown>;
+  /** Tools that exist only on this page (sent to the model as tools, not as page description). */
+  tools?: ToolDefinition[];
+}
+
+/** A tool parameter: the parseBlockValues field format plus required/default/description and arrays. */
+export interface ToolParameter extends Omit<BlockField, 'type'> {
+  type: 'number' | 'integer' | 'boolean' | 'enum' | 'string' | 'array';
+  required?: boolean;
+  description?: string;
+  default?: unknown;
+  /** For 'array': the item field (default string). */
+  items?: Omit<BlockField, 'aliases'>;
+  maxItems?: number;
+}
+
+/** A function of the host app the agent may call. See references/tools.md. */
+export interface ToolDefinition {
+  /** Letters, digits, _ or -, starting with a letter; unique. */
+  name: string;
+  /** Shown in the chat and in Settings > Tools (default: from the name). */
+  title?: string;
+  /** What it does, in the user's words — the model reads this to decide when to call it. */
+  description: string;
+  parameters?: Record<string, ToolParameter>;
+  /** read: runs without asking · write: asks first (confirmWrites) · destructive: always asks (confirmDestructive). Default 'write'. */
+  effect?: 'read' | 'write' | 'destructive';
+  /** Page ids where it can be used ('orders/*' = any sub-page). Default: everywhere. */
+  pages?: string | string[];
+  /** Whether it can be used right now (e.g. a row is selected). */
+  when?: () => boolean;
+  /** Groups the Settings > Tools list. */
+  group?: string;
+  /** On before the user or toolsConfig decides. Default false. */
+  enabled?: boolean;
+  /** Default 30000. */
+  timeoutMs?: number;
+  /** The app's own function. Its return value goes to the model (strings as written, else compact JSON, max 4,000 chars). */
+  run: (args: Record<string, any>, ctx: { agent: AiAgent; signal?: AbortSignal; call: { id: string; name: string } }) => unknown;
+}
+
+/** The app's default tool selection (ai-tools.json); Settings > Tools > "Download ai-tools.json" writes it. */
+export interface ToolsConfig {
+  toolsEnabled?: boolean;
+  confirmWrites?: boolean;
+  confirmDestructive?: boolean;
+  toolMode?: 'auto' | 'native' | 'text';
+  maxToolSteps?: number;
+  tools?: Record<string, boolean | { enabled: boolean; [key: string]: unknown }>;
+}
+
+export interface ToolInfo {
+  name: string;
+  title: string;
+  description: string;
+  effect: 'read' | 'write' | 'destructive';
+  group: string;
+  pages: string[];
+  /** Turned on (settings > toolsConfig > the tool's own default). */
+  enabled: boolean;
+  /** Usable on the current page right now. */
+  available: boolean;
 }
 
 export type ProviderId = 'lmstudio' | 'ollama' | 'custom' | 'openai' | 'anthropic' | 'google' | 'deepseek' | 'openrouter';
@@ -53,6 +114,15 @@ export interface AgentSettings {
   shareScreen: boolean;
   timeoutSec: number;
   rememberKeys: boolean;
+  /** Master switch for tools. */
+  toolsEnabled: boolean;
+  /** 'native' tool calls, 'text' tool blocks (any model), 'auto' = native, text if the server refuses tools. */
+  toolMode: 'auto' | 'native' | 'text';
+  confirmWrites: boolean;
+  confirmDestructive: boolean;
+  maxToolSteps: number;
+  /** Per-tool on/off, merged over toolsConfig and each tool's `enabled`. */
+  toolStates: Record<string, boolean>;
 }
 
 export interface CodeBlock { language: string; code: string }
@@ -193,6 +263,10 @@ export interface AiAgentOptions {
   relayProbe?: boolean | string | { url?: string; timeoutMs?: number };
   /** Settings > Context warns (for local models) when the first request is estimated above this many tokens. Default 3000. */
   contextWarnTokens?: number;
+  /** The app's tool catalog (references/tools.md). */
+  tools?: ToolDefinition[];
+  /** The app's default tool selection: a URL (e.g. 'ai-tools.json'), an object, or a (possibly async) function. */
+  toolsConfig?: string | ToolsConfig | Promise<ToolsConfig> | (() => ToolsConfig | Promise<ToolsConfig>) | null;
   codeActions?: CodeAction[];
   replyActions?: ReplyAction[];
   /**
@@ -213,8 +287,9 @@ export interface AiAgentOptions {
 /**
  * 'open' detail: {} — or { resumed: true } when `resume` reopened the drawer during createAiAgent (replayed once, to
  * listeners registered in the same tick; later, check agent.isOpen()). 'relay' detail: RelayInfo (relayProbe).
+ * 'tool' detail: { name, args, status: 'ok'|'error'|'declined'|'off'|'skipped', result }. 'tool-state': { name, enabled }.
  */
-export type AgentEvent = 'open' | 'close' | 'send' | 'reply' | 'error' | 'context' | 'settings' | 'relay';
+export type AgentEvent = 'open' | 'close' | 'send' | 'reply' | 'error' | 'context' | 'settings' | 'relay' | 'tool' | 'tool-state';
 
 export interface AiAgent {
   open(): void;
@@ -242,6 +317,18 @@ export interface AiAgent {
   ready: Promise<AiAgent>;
   /** What the relay probe found, or null (no relayProbe, or not finished yet). */
   relayInfo(): RelayInfo | null;
+  tools: {
+    /** Every tool known now (app-wide + this page), with its state. */
+    list(): ToolInfo[];
+    register(defs: ToolDefinition | ToolDefinition[]): void;
+    unregister(name: string): void;
+    /** Turn a tool on/off for this user (saved like Settings > Tools). */
+    setEnabled(name: string, on: boolean): void;
+    /** Run a tool directly: arguments validated, no confirmation, on/off ignored. Resolves to what the model would read. */
+    run(name: string, args?: Record<string, unknown>): Promise<string>;
+    /** The current selection as an ai-tools.json object. */
+    exportConfig(): ToolsConfig;
+  };
   /** Subscribe to the flag; called immediately with the current status. Returns an unsubscribe function. */
   onContextStatus(fn: (status: ContextStatus) => void): () => void;
   /** Force the page to be re-sent with the next question. */
