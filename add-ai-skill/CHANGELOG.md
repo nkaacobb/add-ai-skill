@@ -5,6 +5,79 @@ All notable changes to the add-ai-skill skill (it builds the "AI agent drawer" i
 `RELAY_VERSION`) carry their own, which only change when their code does. `scripts/release-hashes.json` fingerprints
 every released runtime and relay.
 
+## 1.4.0 — memory and vision (runtime and relays 1.3.0)
+
+The agent remembers what it is asked to remember, and can look at the screen. Both are part of the runtime: an app
+gets them by replacing its runtime copy, and the skill adds the app-specific part. All 1.2 options and methods keep
+working.
+
+### Memory
+
+- Notes kept between conversations: the user says "remember that…", the model calls the built-in `remember` tool, the
+  chat shows a chip with **Undo**; `forget` deletes one after the user confirms. The notes are a `== MEMORY ==`
+  section of every system prompt, marked as notes that lose against the screen.
+- **Settings > Memory**: the list (edit, delete, add), *Download ai-memory.json*, *Copy JSON*, *Import a file…*,
+  *Delete all*, and two switches (use memories; let the agent save them).
+- `memoryFile` (`ai-memory.json`): the app's starting notes. A browser stores only what differs from the file (its own
+  notes, edits, deletions), so a later file still reaches users. `memorySave(file)` lets an app's backend keep them.
+- `agent.memory` (`list`, `add`, `update`, `remove`, `clear`, `export`, `import`), the `memory` event, the settings
+  `memoryEnabled` / `memoryWrite`, `memory: false` to remove it. Limits: 100 notes of 500 characters.
+
+### Vision
+
+- A **camera button** beside Send attaches a screenshot of what the user is looking at (a thumbnail in the composer,
+  then on the question); the model receives it as an image.
+- The agent's own `take_screenshot` tool, callable only when the user frees it (Settings > Vision: untick "Only take
+  a screenshot when I press the camera button"). Otherwise the agent can ask, and the user gets *Allow once* /
+  *Always allow* / *No*. Every screenshot the agent takes shows as a thumbnail on its chip.
+- **Settings > Vision**: "This model can see images" (off: no camera button, no screenshots), the camera-only switch,
+  how screenshots are taken here, *Stop sharing this tab*; with LM Studio, what the server says about the loaded model.
+- Two ways to take the picture: the browser's screen capture of the tab (default: the whole page as displayed, drawer
+  cropped off; the browser asks the user) or the app's `screenshot` hook (a canvas, image, video frame, Blob…; no
+  prompt; a WebGL canvas returned right after a render is read before its buffer is cleared).
+- JPEG scaled to `screenshotMaxEdge` (1280 px); only the two newest questions with screenshots send their images;
+  saved chats keep thumbnails only. `agent.screenshot()`, the `screenshot` event, the settings `vision` /
+  `screenshotAuto`, `screenshots: false` to remove it.
+- Images in all three provider formats (OpenAI-compatible, Anthropic, Gemini) and in text-mode tool results. Checked
+  live with a vision model on LM Studio; Anthropic and Gemini follow their documented formats (unit-tested, not run live).
+
+### Relays (1.3.0)
+
+- `relay.php` and `relay.mjs` check and pass `images` on user messages and tool results: `limits.maxImages` (public 4,
+  local 16; 0 refuses images) and `maxImageBytes` (public 1.5 MB, local 4 MB, as base64), on top of `maxBodyBytes`,
+  which stays the cap for the text. The GET reply has `images` and, from the preset, `vision`.
+- The drawer asks a relay once before the first request with an image, and refuses the question with a clear message
+  when the relay is older than 1.3 (it would drop the image silently). With `relayProbe`, such a relay switches vision off.
+- `relay.php` answers 413 with the reason when a body is larger than PHP's `post_max_size` (PHP discards such bodies).
+
+### Skill workflow
+
+- New step 9, **Memory and vision**, and `references/memory-and-vision.md`: collecting the seed notes, `ai-memory.json`,
+  where users' notes live, choosing the capture method, hook recipes (2D, WebGL, layered canvases), host requirements
+  (secure context, `Permissions-Policy`, CSP), relay limits, privacy.
+- `scripts/detect.mjs` reports, per feature (tools, memory, vision), whether the installed runtime has it and whether
+  the integration uses it, plus canvases/WebGL views and policy headers that matter for screenshots — so an upgrade
+  adds only what is missing. `references/upgrading.md` has the steps for an app at 1.2 or older.
+- `scripts/verify.mjs`: `memory` and `vision` checks (it takes one screenshot the way the camera button does).
+- Hello World ships `ai-memory.json`.
+- Tests: the memory store and prompt, images per provider and in the conversation, relay image limits (Node + PHP),
+  and in a real browser: remember / forget / Undo / Settings > Memory, a WebGL `screenshot` hook, the agent asking to
+  look, and the browser's screen capture with the drawer cropped off.
+
+### Upgrading from 1.2
+
+1. Re-copy `assets/ai-agent/` and the relay. Memory and vision are then on with their defaults.
+2. Add what the app lacks (`references/upgrading.md`, "Adding memory and vision"): `ai-memory.json` + `memoryFile`,
+   and a `screenshot` hook where the view is a canvas. Set `defaults: { vision: false }` for a text-only default model.
+3. Behaviour changes to know about:
+   - Requests now carry tool definitions even in apps without tools (`remember`, `forget`, and `request_tool` while
+     the agent may not look on its own). A model server without tool calling gets them as text blocks automatically.
+     `memory: false` and `screenshots: false` give exactly the 1.2 requests.
+   - The default composer placeholder is shorter ("Ask about what is on screen…").
+   - A relay must be 1.3 for screenshots; its body cap for text is unchanged, images come on top. Raise
+     `client_max_body_size` / `post_max_size` in front of it.
+   - A page with a `Content-Security-Policy` needs `img-src data:` for the thumbnails.
+
 ## 1.3.0 — upgrade mode (runtime and relays unchanged: 1.2.0)
 
 Running the skill on an app that already has the agent now upgrades it instead of building a second one.

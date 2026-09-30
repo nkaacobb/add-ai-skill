@@ -5,7 +5,8 @@
 //
 // GET {relayUrl} contract (relay.php / relay.mjs 1.1+):
 //   200 { ok, relay: 'ai-agent-drawer', version, available, mode: 'local'|'public', providers: [ids],
-//         serverKeys: { id: bool }, preset: { provider, model, models: [ids] } | null, reason? }
+//         serverKeys: { id: bool }, preset: { provider, model, models: [ids], vision? } | null,
+//         images: <how many images one request may carry; 0 = none; absent before 1.3>, reason? }
 // The relay answers 200 with available:false (not 403) when it will not serve this client, so page loads stay free
 // of console errors. 1.0 relays have no `available`: `ok` is used instead. Pure module: fetch only, no DOM.
 
@@ -17,13 +18,13 @@ function normalizePreset(p) {
   if (!p || typeof p !== 'object' || !PROVIDERS[p.provider]) return null;
   const models = (Array.isArray(p.models) ? p.models : []).map(String).filter(Boolean);
   const model = typeof p.model === 'string' && p.model ? p.model : (models[0] || '');
-  return { provider: p.provider, model, models: models.length ? models : (model ? [model] : []) };
+  return { provider: p.provider, model, models: models.length ? models : (model ? [model] : []), ...(typeof p.vision === 'boolean' ? { vision: p.vision } : {}) };
 }
 
 /** A GET reply (parsed JSON) -> relay info. */
 export function normalizeRelayInfo(json, url, status = 200) {
   if (!json || typeof json !== 'object' || json.relay !== 'ai-agent-drawer') {
-    return { url, available: false, mode: '', preset: null, providers: [], serverKeys: {}, reason: 'Not an ai-agent-drawer relay.' };
+    return { url, available: false, mode: '', preset: null, providers: [], serverKeys: {}, images: 0, reason: 'Not an ai-agent-drawer relay.' };
   }
   const available = typeof json.available === 'boolean' ? json.available : json.ok === true && status < 400;
   return {
@@ -34,13 +35,14 @@ export function normalizeRelayInfo(json, url, status = 200) {
     providers: Array.isArray(json.providers) ? json.providers.filter((id) => PROVIDERS[id]) : [],
     serverKeys: json.serverKeys && typeof json.serverKeys === 'object' ? { ...json.serverKeys } : {},
     preset: normalizePreset(json.preset),
+    images: Number.isInteger(json.images) && json.images > 0 ? json.images : 0,
     reason: typeof json.reason === 'string' ? json.reason : '',
   };
 }
 
 /** Ask a relay whether it will serve this page. Never throws. */
 export async function probeRelay(url, { timeoutMs = PROBE_TIMEOUT_MS, headers = {}, fetch = globalThis.fetch } = {}) {
-  const none = (reason) => ({ url, available: false, mode: '', preset: null, providers: [], serverKeys: {}, reason });
+  const none = (reason) => ({ url, available: false, mode: '', preset: null, providers: [], serverKeys: {}, images: 0, reason });
   if (!url) return none('No relay address.');
   if (typeof fetch !== 'function') return none('No fetch implementation.');
   const ctl = new AbortController();
@@ -76,7 +78,9 @@ export function relayDefaults(info) {
   if (info.preset) {
     out.provider = info.preset.provider;
     out.profiles = { [info.preset.provider]: { model: info.preset.model } };
+    if (typeof info.preset.vision === 'boolean') out.vision = info.preset.vision;
   }
+  if (!info.images) out.vision = false;       // a relay that cannot pass images: no screenshots through it
   return out;
 }
 
@@ -95,6 +99,7 @@ function sameUrl(a, b) {
 export function adjustForRelay(settings, info) {
   if (!info || settings.transport !== 'relay' || !sameUrl(settings.relayUrl, info.url)) return settings;
   if (!info.available) return { ...settings, transport: 'direct' };
+  if (!info.images && settings.vision) settings = { ...settings, vision: false };
   if (info.mode !== 'public' || !info.preset) return settings;
   const { provider, model, models } = info.preset;
   const prof = settings.profiles?.[provider] || {};

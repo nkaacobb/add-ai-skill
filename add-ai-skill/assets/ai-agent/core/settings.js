@@ -38,6 +38,12 @@ export const SETTINGS_SCHEMA = Object.freeze({
   confirmDestructive: ['boolean', true],                    // ask before destructive tools
   maxToolSteps: ['int', 8, [1, 30]],                        // tool rounds per question
   toolStates: ['toolStates', {}],                           // { toolName: true | false }, merged over the defaults
+  // Memory (core/memory.js): notes kept between conversations.
+  memoryEnabled: ['boolean', true],                         // add the memories to every conversation
+  memoryWrite: ['boolean', true],                           // the agent may save memories when asked to remember
+  // Vision (ui/capture.js): screenshots of what the user is looking at.
+  vision: ['boolean', true],                                // the model accepts images
+  screenshotAuto: ['boolean', false],                       // the agent may take screenshots on its own (else: only the button)
 });
 
 export const DEFAULT_SETTINGS = Object.freeze(Object.fromEntries(

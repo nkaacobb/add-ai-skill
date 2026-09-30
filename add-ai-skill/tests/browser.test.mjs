@@ -1,5 +1,6 @@
 // Runtime behaviour that only a real browser can show: keyboard isolation from host shortcuts, native modal
-// dialogs, the push-layout warning, theme overrides, resume, form controls, the relay probe and the context size.
+// dialogs, the push-layout warning, theme overrides, resume, form controls, the relay probe, the context size, the
+// tool loop, memory, and screenshots (an app hook with a WebGL canvas, and the browser's own screen capture).
 // Runs headless Edge/Chrome/Chromium over the DevTools protocol (scripts/lib/cdp.mjs, Node 22+). Skipped when no
 // browser is installed; set AIA_BROWSER to a browser executable to choose one, or AIA_SKIP_BROWSER=1 to skip.
 
@@ -21,7 +22,8 @@ let page;
 before(async () => {
   if (skip) return;
   server = await serveStatic(ROOT);
-  browser = await launchBrowser({ width: 1366, height: 900 });
+  // --auto-accept-this-tab-capture: the "share this tab" prompt of the screen-capture test is accepted without a person.
+  browser = await launchBrowser({ width: 1366, height: 900, args: ['--auto-accept-this-tab-capture'] });
   page = browser.page;
 });
 
@@ -315,7 +317,7 @@ test('tools: the drawer runs the model\'s tool calls, asks before changes, and o
     await page.evaluate((url) => {
       document.body.insertAdjacentHTML('beforeend', '<h1 id="title">Old title</h1>');
       window.agent = M.createAiAgent({
-        appId: 'tools-e2e', launcher: false, devWarnings: false,
+        appId: 'tools-e2e', launcher: false, devWarnings: false, memory: false, screenshots: false,   // the app's tools only
         defaults: { provider: 'custom', profiles: { custom: { baseUrl: url, model: 'fake-model' } } },
         page: { id: 'list', title: 'List', content: () => `Title: ${document.getElementById('title').textContent}\nItems: a, b, c` },
         tools: [
@@ -388,7 +390,7 @@ test('tools: the drawer runs the model\'s tool calls, asks before changes, and o
     await page.evaluate(async (url) => {
       document.body.insertAdjacentHTML('beforeend', '<h1 id="title">Old</h1>');
       window.agent = M.createAiAgent({
-        appId: 'tools-text', launcher: false, devWarnings: false,
+        appId: 'tools-text', launcher: false, devWarnings: false, memory: false, screenshots: false,
         defaults: { provider: 'custom', toolMode: 'text', confirmWrites: false, profiles: { custom: { baseUrl: url, model: 'm' } } },
         tools: [{ name: 'set_title', description: 'Rename.', effect: 'write', enabled: true, parameters: { title: { type: 'string', required: true } }, run: ({ title }) => { document.getElementById('title').textContent = title; } }],
       });
@@ -425,4 +427,371 @@ test('Settings > Context shows the estimated tokens and warns for local models a
   assert.match(big.text, /8k/);
   await page.evaluate(() => { agent.setContent(() => 'small'); document.querySelector('.aia-modal [data-tab="agent"]').click(); document.querySelector('.aia-modal [data-tab="context"]').click(); });
   assert.equal((await read()).warn, false);
+});
+
+/* ------------------------------------------------------------------------------------------ memory */
+
+test('memory: the agent saves what it is asked to remember, knows it in the next request, and Settings > Memory edits it', { skip, timeout: 90000 }, async () => {
+  const { startFakeUpstream } = await import('./fixtures/fake-upstream.mjs');
+  const upstream = await startFakeUpstream({
+    cors: true,
+    respond: (body, n) => [
+      { toolCalls: [{ id: 'c1', name: 'remember', arguments: { text: 'The hidden demo scene opens with Ctrl+Shift+E.' } }] },
+      { text: 'Saved.' },
+      { toolCalls: [{ id: 'c2', name: 'forget', arguments: { id: 'm1' } }] },
+      { text: 'Forgotten.' },
+    ][n - 1] || { text: 'Ok.' },
+  });
+  try {
+    await fresh();
+    await page.evaluate(async (url) => {
+      window.saved = [];
+      window.events = [];
+      window.agent = M.createAiAgent({
+        appId: 'mem-e2e', launcher: false, devWarnings: false,
+        defaults: { provider: 'custom', profiles: { custom: { baseUrl: url, model: 'fake-model' } } },
+        memoryFile: { memories: [{ id: 'm1', text: 'The user prefers metric units.' }] },
+        memorySave: (file) => { saved.push(file.memories.map((m) => m.id).join(',')); },
+        screenshots: false,
+      });
+      agent.on('memory', (e) => events.push(e.change.type));
+      await agent.ask('Remember the shortcut for the easter egg: Ctrl+Shift+E.');
+    }, upstream.url);
+
+    const first = await page.evaluate(() => ({
+      list: agent.memory.list().map((m) => [m.id, m.text, m.source]),
+      chip: [...document.querySelectorAll('.aia-drawer .aia-tool')].map((c) => [c.querySelector('.aia-tool-title').textContent, c.dataset.status, c.querySelector('.aia-tool-state').textContent, !!c.querySelector('[data-aia-undo]')]),
+      stored: JSON.parse(localStorage.getItem('mem-e2e.ai.memory')),
+      events,
+    }));
+    assert.deepEqual(first.list, [['m1', 'The user prefers metric units.', 'app'], ['m2', 'The hidden demo scene opens with Ctrl+Shift+E.', 'agent']]);
+    assert.deepEqual(first.chip, [['Remember', 'ok', 'Saved', true]], 'a chip with Undo, and no confirmation card');
+    assert.deepEqual(first.stored.items.map((m) => m.id), ['m2'], 'only what this browser added is stored; the app\'s file stays the base');
+    assert.deepEqual(first.events, ['base', 'add']);
+
+    const [q1, q2] = upstream.chats().map((c) => c.body);
+    assert.deepEqual(q1.tools.map((t) => t.function.name), ['remember', 'forget'], 'an app without tools of its own still gets the memory tools');
+    assert.match(q1.messages[0].content, /== MEMORY ==[\s\S]*- \[m1\] The user prefers metric units\.[\s\S]*call the `remember` tool/);
+    assert.doesNotMatch(q1.messages[0].content, /\[m2\]/);
+    assert.match(q2.messages[0].content, /- \[m2\] The hidden demo scene opens with Ctrl\+Shift\+E\./, 'the next request already knows it');
+    assert.deepEqual(q2.messages.filter((m) => m.role === 'tool').map((m) => m.content), ['Saved as memory m2.']);
+    await page.waitFor(() => window.saved.length === 1, { timeoutMs: 5000 });
+    assert.deepEqual(await page.evaluate(() => window.saved), ['m1,m2'], 'memorySave gets the whole file after a change (not for the file load)');
+
+    // Forgetting asks first (it deletes something the user saved).
+    await page.evaluate(() => { window.done = agent.ask('Forget the units thing.'); });
+    await page.waitFor(() => [...document.querySelectorAll('.aia-tool-card:not([hidden])')].some((c) => c.textContent.includes('Delete the saved memory')), { timeoutMs: 15000 });
+    assert.equal(await page.evaluate(() => agent.memory.list().length), 2, 'nothing is deleted before the user agrees');
+    await page.evaluate(() => document.querySelector('.aia-tool-card:not([hidden]) [data-decide="run"]').click());
+    await page.evaluate(() => window.done);
+    assert.deepEqual(await page.evaluate(() => agent.memory.list().map((m) => m.id)), ['m2']);
+    await page.evaluate(() => [...document.querySelectorAll('.aia-drawer [data-aia-undo]')].pop().click());
+    assert.deepEqual(await page.evaluate(() => agent.memory.list().map((m) => m.id)), ['m1', 'm2'], 'Undo on the chip brings it back');
+
+    // Settings > Memory: edit, add, delete, save; the export is the app's memory file format.
+    const tab = await page.evaluate(async () => {
+      agent.openSettings('memory');
+      const rows = () => [...document.querySelectorAll('.aia-modal .aia-memory-row textarea')];
+      const before = rows().map((t) => t.value);
+      rows()[0].value = 'The user prefers imperial units.';
+      rows()[0].dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('.aia-modal [data-f="memoryNew"]').value = 'Likes the dark colour map.';
+      document.querySelector('.aia-modal [data-act="memoryAdd"]').click();
+      document.querySelectorAll('.aia-modal [data-memory-delete]')[1].click();
+      const pending = agent.memory.list().map((m) => m.text);
+      document.querySelector('.aia-modal [data-act="save"]').click();
+      await new Promise((r) => setTimeout(r, 80));
+      return { before, pending, after: agent.memory.list().map((m) => [m.id, m.text, m.source]), file: agent.memory.export(), tabs: [...document.querySelectorAll('.aia-modal .aia-tab')].filter((t) => !t.hidden).map((t) => t.textContent) };
+    });
+    assert.deepEqual(tab.before, ['The user prefers metric units.', 'The hidden demo scene opens with Ctrl+Shift+E.']);
+    assert.deepEqual(tab.pending, tab.before, 'edits are a draft until Save');
+    assert.deepEqual(tab.after, [['m1', 'The user prefers imperial units.', 'app'], ['m3', 'Likes the dark colour map.', 'user']]);
+    assert.deepEqual([tab.file.version, tab.file.memories.map((m) => m.id)], [1, ['m1', 'm3']]);
+    assert.deepEqual(tab.tabs, ['Model', 'Agent', 'Memory', 'Context'], 'screenshots: false removes the Vision tab; no app tools, no Tools tab');
+
+    // Saving switched off: the tools are gone and the model is told it cannot save.
+    await page.evaluate(async () => { agent.settings.save({ memoryWrite: false }); await agent.ask('Remember that I like tea.'); });
+    const off = upstream.lastChat().body;
+    assert.equal(off.tools, undefined);
+    assert.match(off.messages[0].content, /You cannot save or change memories/);
+    assert.deepEqual(page.errors(), []);
+  } finally {
+    await upstream.close();
+  }
+
+  // memory: false — no tab, no tools, no prompt section, agent.memory is null.
+  const plain = await startFakeUpstream({ cors: true });
+  try {
+    await fresh();
+    const r = await page.evaluate(async (url) => {
+      window.agent = M.createAiAgent({ appId: 'mem-off', launcher: false, devWarnings: false, memory: false, screenshots: false, defaults: { provider: 'custom', profiles: { custom: { baseUrl: url, model: 'm' } } } });
+      await agent.ask('hi');
+      agent.openSettings('model');
+      return { memory: agent.memory, tabs: [...document.querySelectorAll('.aia-modal .aia-tab')].filter((t) => !t.hidden).map((t) => t.textContent), camera: document.querySelector('.aia-shot-btn').hidden };
+    }, plain.url);
+    assert.deepEqual(r, { memory: null, tabs: ['Model', 'Agent', 'Context'], camera: true });
+    const body = plain.lastChat().body;
+    assert.equal(body.tools, undefined, 'exactly the 1.2 request: no tools');
+    assert.doesNotMatch(body.messages[0].content, /MEMORY|Screenshots:|TOOLS/);
+  } finally {
+    await plain.close();
+  }
+});
+
+/* ------------------------------------------------------------------------------------------ vision */
+
+/** Decode an image in the page and read pixels: { w, h, px: [[r,g,b], …] } for points given as fractions of its size. */
+const readImage = (url, points) => page.evaluate(async (src, pts) => {
+  const img = new Image();
+  img.src = src;
+  await img.decode();
+  const c = document.createElement('canvas');
+  c.width = img.width;
+  c.height = img.height;
+  const g = c.getContext('2d');
+  g.drawImage(img, 0, 0);
+  return { w: img.width, h: img.height, px: pts.map(([fx, fy]) => [...g.getImageData(Math.floor(fx * img.width), Math.floor(fy * img.height), 1, 1).data].slice(0, 3)) };
+}, url, points);
+const near = (a, b, tol = 24) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
+const imagesOf = (body) => body.messages.flatMap((m) => (Array.isArray(m.content) ? m.content.filter((p) => p.type === 'image_url').map((p) => p.image_url.url) : []));
+
+test('vision: the camera button attaches the app\'s own picture (a WebGL canvas) and the model receives it', { skip, timeout: 90000 }, async () => {
+  const { startFakeUpstream } = await import('./fixtures/fake-upstream.mjs');
+  const upstream = await startFakeUpstream({ cors: true, reply: ['I see a blue view.'] });
+  try {
+    await fresh();
+    const kind = await page.evaluate((url) => {
+      document.body.insertAdjacentHTML('beforeend', '<canvas id="view" width="640" height="360"></canvas>');
+      const canvas = document.getElementById('view');
+      // A WebGL canvas without preserveDrawingBuffer reads back blank a moment after it was drawn: the hook renders a
+      // frame and returns the canvas, and the runtime reads it at once.
+      const gl = canvas.getContext('webgl');
+      const draw = () => {
+        if (gl) { gl.clearColor(0, 0.5, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT); } else { const g = canvas.getContext('2d'); g.fillStyle = 'rgb(0,128,255)'; g.fillRect(0, 0, 640, 360); }
+      };
+      draw();
+      window.hookCalls = [];
+      window.shots = [];
+      window.agent = M.createAiAgent({
+        appId: 'vision-hook', launcher: false, devWarnings: false, memory: false,
+        defaults: { provider: 'custom', profiles: { custom: { baseUrl: url, model: 'fake-vlm' } } },
+        screenshot: (info) => { hookCalls.push(info.reason); draw(); return canvas; },
+        screenshotMaxEdge: 320,
+      });
+      agent.on('screenshot', (e) => shots.push(e));
+      agent.open();
+      return gl ? 'webgl' : '2d';
+    }, upstream.url);
+
+    assert.equal(await page.evaluate(() => document.querySelector('.aia-shot-btn').hidden), false, 'a camera button beside Send');
+    await sleep(300);                                   // let the drawn frame be presented (the buffer is then cleared)
+    await page.click('.aia-shot-btn');
+    await page.waitFor(() => document.querySelectorAll('.aia-attach img').length === 1, { timeoutMs: 10000 });
+    await page.click('.aia-shot-btn');
+    await page.waitFor(() => document.querySelectorAll('.aia-attach img').length === 2, { timeoutMs: 10000 });
+    await page.evaluate(() => document.querySelector('.aia-attach [data-shot-remove]').click());
+    assert.equal(await page.evaluate(() => document.querySelectorAll('.aia-attach img').length), 1, 'a waiting screenshot can be removed');
+
+    await page.evaluate(() => { document.querySelector('.aia-composer textarea').value = 'What colour is the view?'; document.querySelector('.aia-composer').requestSubmit(); });
+    await page.waitFor(() => !!document.querySelector('.aia-msg.aia-assistant:not(.aia-welcome) .aia-msg-foot:not([hidden])'), { timeoutMs: 15000 });
+
+    const sent = upstream.lastChat().body;
+    const urls = imagesOf(sent);
+    assert.equal(urls.length, 1);
+    assert.match(sent.messages.at(-1).content[0].text, /A screenshot of the user's screen[\s\S]*What colour is the view\?$/);
+    assert.match(sent.messages[0].content, /Screenshots: an image attached to a user message/);
+    const img = await readImage(urls[0], [[0.5, 0.5], [0.05, 0.9]]);
+    assert.deepEqual([img.w, img.h], [320, 180], 'scaled to screenshotMaxEdge');
+    assert.ok(img.px.every((p) => near(p, [0, 128, 255])), `${kind}: the picture is the view, not a blank buffer: ${JSON.stringify(img.px)}`);
+
+    const ui = await page.evaluate(() => ({
+      hookCalls, shots,
+      thumb: document.querySelectorAll('.aia-msg.aia-user .aia-shots img').length,
+      pending: document.querySelectorAll('.aia-attach img').length,
+      saved: JSON.parse(localStorage.getItem('vision-hook.ai.chats'))[0].messages[0].shots.map((s) => [s.thumb.startsWith('data:image/jpeg'), s.thumb.length < 20000, 'data' in s]),
+      tools: null,
+    }));
+    assert.deepEqual(ui.hookCalls, ['user', 'user']);
+    assert.deepEqual(ui.shots.at(-1), { by: 'user', width: 320, height: 180, source: 'app' });
+    assert.deepEqual([ui.thumb, ui.pending], [1, 0], 'the question shows its thumbnail; the composer is empty again');
+    assert.deepEqual(ui.saved, [[true, true, false]], 'saved chats keep a small thumbnail, never the full image');
+    assert.deepEqual(sent.tools.map((t) => t.function.name), ['request_tool'], 'the agent cannot look on its own, but can ask');
+
+    // The next question without a new screenshot still carries the last one; a text-only model gets none.
+    await page.evaluate(() => agent.ask('And the corners?'));
+    assert.equal(imagesOf(upstream.lastChat().body).length, 1);
+    await page.evaluate(async () => { agent.settings.save({ vision: false }); await agent.ask('Still there?'); });
+    const blind = upstream.lastChat().body;
+    assert.equal(imagesOf(blind).length, 0);
+    assert.equal(blind.tools, undefined);
+    assert.match(JSON.stringify(blind.messages), /A screenshot was attached to this message; it is not included any more/);
+    assert.equal(await page.evaluate(() => document.querySelector('.aia-shot-btn').hidden), true, 'no camera button for a text-only model');
+    assert.deepEqual(page.errors(), []);
+  } finally {
+    await upstream.close();
+  }
+});
+
+test('vision: the agent asks before it looks; "Allow once" sends one screenshot, freeing it lets it look on its own', { skip, timeout: 90000 }, async () => {
+  const { startFakeUpstream } = await import('./fixtures/fake-upstream.mjs');
+  const upstream = await startFakeUpstream({
+    cors: true,
+    respond: (body, n) => [
+      { toolCalls: [{ id: 'c1', name: 'request_tool', arguments: { name: 'take_screenshot', reason: 'To check the layout.' } }] },
+      { text: 'The box is green.' },
+      { toolCalls: [{ id: 'c2', name: 'take_screenshot', arguments: {} }] },
+      { text: 'Still green.' },
+    ][n - 1] || { text: 'Ok.' },
+  });
+  try {
+    await fresh();
+    await page.evaluate((url) => {
+      document.body.insertAdjacentHTML('beforeend', '<canvas id="view" width="400" height="300"></canvas>');
+      const g = document.getElementById('view').getContext('2d');
+      g.fillStyle = 'rgb(0,160,60)';
+      g.fillRect(0, 0, 400, 300);
+      window.agent = M.createAiAgent({
+        appId: 'vision-agent', launcher: false, devWarnings: false, memory: false,
+        defaults: { provider: 'custom', profiles: { custom: { baseUrl: url, model: 'fake-vlm' } } },
+        screenshot: () => document.getElementById('view'),
+      });
+      window.done = agent.ask('Does the layout look right?');
+    }, upstream.url);
+
+    await page.waitFor(() => [...document.querySelectorAll('.aia-tool-card:not([hidden])')].some((c) => c.textContent.includes('look at your screen')), { timeoutMs: 15000 });
+    assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.aia-tool-card:not([hidden]) [data-decide]')].map((b) => b.textContent)), ['Allow once', 'Always allow', 'No']);
+    await page.click('.aia-tool-card:not([hidden]) [data-decide="once"]');
+    await page.evaluate(() => window.done);
+
+    const [first, second] = upstream.chats().map((c) => c.body);
+    assert.match(first.messages[0].content, /Turned off by the user[\s\S]*- take_screenshot —/, 'the model knows the tool exists and is off');
+    assert.deepEqual(second.messages.slice(-2).map((m) => m.role), ['tool', 'user'], 'the screenshot comes back with the result of its request');
+    assert.match(second.messages.at(-2).content, /^Screenshot taken \(400 × 300 px\)/);
+    const img = await readImage(imagesOf(second)[0], [[0.5, 0.5]]);
+    assert.ok(near(img.px[0], [0, 160, 60]), JSON.stringify(img.px));
+    const once = await page.evaluate(() => ({
+      auto: agent.settings.get().screenshotAuto,
+      chips: [...document.querySelectorAll('.aia-drawer .aia-tool')].map((c) => [c.querySelector('.aia-tool-title').textContent, c.dataset.status, !!c.querySelector('.aia-tool-shot img')]),
+      saved: JSON.parse(localStorage.getItem('vision-agent.ai.chats'))[0].messages[1].actions.map((a) => [a.call, a.status, a.thumb.startsWith('data:image/jpeg')]),
+    }));
+    assert.equal(once.auto, false, '"Allow once" does not change the setting');
+    assert.deepEqual(once.chips, [['Take screenshot', 'ok', true]], 'the chat shows the thumbnail of what the agent saw');
+    assert.deepEqual(once.saved, [['take_screenshot()', 'ok', true]]);
+
+    // Settings > Vision: untick "only when I press the camera button" -> the agent may look on its own.
+    const tab = await page.evaluate(async () => {
+      agent.openSettings('vision');
+      const box = document.querySelector('.aia-modal [data-f="shotsManual"]');
+      const was = box.checked;
+      box.click();
+      document.querySelector('.aia-modal [data-act="save"]').click();
+      await new Promise((r) => setTimeout(r, 80));
+      return { was, auto: agent.settings.get().screenshotAuto, how: document.querySelector('.aia-modal [data-f="visionHow"]').textContent };
+    });
+    assert.deepEqual([tab.was, tab.auto], [true, true]);
+    assert.match(tab.how, /This application provides the picture itself/);
+    await sleep(700);                                   // the settings modal closes itself after saving
+    await page.evaluate(() => agent.ask('Look again.'));
+    const third = upstream.chats()[2].body;
+    assert.deepEqual(third.tools.map((t) => t.function.name), ['take_screenshot'], 'now it is a tool the model can call');
+    assert.equal(await page.evaluate(() => document.querySelectorAll('.aia-tool-card:not([hidden])').length), 0, 'no card this time');
+    assert.equal(imagesOf(upstream.chats()[3].body).length, 1);
+    // Reloading a saved chat shows the thumbnails again.
+    const reloaded = await page.evaluate(() => { const id = JSON.parse(localStorage.getItem('vision-agent.ai.chats'))[0].id; agent.newChat(); document.querySelector(`[data-chat-open="${id}"]`).click(); return document.querySelectorAll('.aia-drawer .aia-tool-shot img').length; });
+    assert.equal(reloaded, 2);
+    assert.deepEqual(page.errors(), []);
+  } finally {
+    await upstream.close();
+  }
+});
+
+test('vision without an app hook: the browser\'s screen capture of this tab, with the drawer left out', { skip, timeout: 90000 }, async () => {
+  const { startFakeUpstream } = await import('./fixtures/fake-upstream.mjs');
+  const upstream = await startFakeUpstream({ cors: true, respond: (body, n) => (n === 1 ? { toolCalls: [{ id: 'c1', name: 'take_screenshot', arguments: {} }] } : { text: 'Done.' }) });
+  try {
+    await fresh();
+    // The capture shows the real window, so the emulated viewport of the other tests is switched off here.
+    await page.send('Emulation.clearDeviceMetricsOverride');
+    await sleep(300);
+    const geo = await page.evaluate((url) => {
+      document.body.style.margin = '0';
+      document.body.insertAdjacentHTML('beforeend', '<div style="position:fixed;left:0;top:0;width:50vw;height:100vh;background:rgb(220,0,0)"></div>');
+      window.agent = M.createAiAgent({
+        appId: 'vision-screen', launcher: false, devWarnings: false, memory: false, push: false,
+        defaults: { provider: 'custom', profiles: { custom: { baseUrl: url, model: 'fake-vlm' } } },
+      });
+      agent.open();
+      return { supported: typeof navigator.mediaDevices?.getDisplayMedia === 'function' };
+    }, upstream.url);
+    assert.equal(geo.supported, true);
+    // The drawer slides in: wait until it stands still.
+    await page.waitFor(async () => {
+      const left = () => document.querySelector('.aia-drawer').getBoundingClientRect().left;
+      const a = left();
+      await new Promise((r) => setTimeout(r, 150));
+      return a === left() && a < innerWidth - 100;
+    }, { timeoutMs: 10000 });
+    const box = await page.evaluate(() => ({ w: innerWidth, h: innerHeight, drawerLeft: document.querySelector('.aia-drawer').getBoundingClientRect().left }));
+
+    await page.click('.aia-shot-btn');                  // a real click: the browser only shares the screen after one
+    await page.waitFor(() => document.querySelectorAll('.aia-attach img').length === 1 || document.querySelector('.aia-drawer .aia-error'), { timeoutMs: 15000 });
+    assert.equal(await page.evaluate(() => document.querySelector('.aia-drawer .aia-error')?.textContent || ''), '');
+    await page.evaluate(() => { document.querySelector('.aia-composer textarea').value = 'What is on the left?'; document.querySelector('.aia-composer').requestSubmit(); });
+    await page.waitFor(() => [...document.querySelectorAll('.aia-tool-card:not([hidden])')].some((c) => c.textContent.includes('look at your screen')), { timeoutMs: 15000 });
+
+    const first = upstream.chats()[0].body;
+    const img = await readImage(imagesOf(first)[0], [[0.2, 0.5], [0.95, 0.5]]);
+    // (While a tab is shared the browser's own "sharing" bar takes some of the window's height.)
+    assert.ok(Math.abs(img.w - box.drawerLeft) <= 2 && img.h <= box.h && img.h > box.h - 120, `the picture is the page beside the drawer (${img.w}×${img.h} for ${box.drawerLeft}×${box.h})`);
+    assert.ok(near(img.px[0], [220, 0, 0], 40), `the left half is the red block: ${JSON.stringify(img.px[0])}`);
+    assert.ok(near(img.px[1], [255, 255, 255], 40), `the right edge is the page, not the drawer: ${JSON.stringify(img.px[1])}`);
+    const live = () => page.evaluate(async () => { agent.openSettings('vision'); const v = !document.querySelector('.aia-modal [data-f="visionLive"]').hidden; document.querySelector('.aia-modal [data-act="close"]').click(); return v; });
+    assert.equal(await live(), false, 'with "only when I press the button", sharing stops after each screenshot');
+
+    // "Always allow": the agent's own screenshot, and the tab stays shared until the user stops it.
+    await page.click('.aia-tool-card:not([hidden]) [data-decide="always"]');
+    await page.waitFor(() => !document.querySelector('.aia-drawer').classList.contains('aia-busy'), { timeoutMs: 15000 });
+    assert.equal(await page.evaluate(() => agent.settings.get().screenshotAuto), true);
+    assert.equal(imagesOf(upstream.chats()[1].body).length, 2, 'the question\'s screenshot and the agent\'s');
+    assert.equal(await live(), true);
+    const stopped = await page.evaluate(() => { agent.openSettings('vision'); document.querySelector('.aia-modal [data-act="visionStop"]').click(); return document.querySelector('.aia-modal [data-f="visionLive"]').hidden; });
+    assert.equal(stopped, true, '"Stop sharing this tab" ends it');
+    assert.deepEqual(page.errors(), []);
+  } finally {
+    await upstream.close();
+  }
+});
+
+test('built-in tools keep working with the app\'s tools switched off, and as text blocks for models without tool calling', { skip, timeout: 60000 }, async () => {
+  const { startFakeUpstream } = await import('./fixtures/fake-upstream.mjs');
+  const upstream = await startFakeUpstream({
+    cors: true,
+    respond: (body, n) => (n === 1 ? { text: 'Noted.\n```tool\n{"name": "remember", "arguments": {"text": "The user likes tea."}}\n```' } : { text: 'Saved.' }),
+  });
+  try {
+    await fresh();
+    await page.evaluate(async (url) => {
+      window.ran = 0;
+      window.agent = M.createAiAgent({
+        appId: 'builtin-text', launcher: false, devWarnings: false, screenshots: false,
+        defaults: { provider: 'custom', toolMode: 'text', toolsEnabled: false, profiles: { custom: { baseUrl: url, model: 'm' } } },
+        tools: [{ name: 'wipe', description: 'Remove every item.', effect: 'destructive', enabled: true, run: () => { ran += 1; } }],
+      });
+      await agent.ask('Remember that I like tea.');
+    }, upstream.url);
+    const [first, second] = upstream.chats().map((c) => c.body);
+    assert.equal(first.tools, undefined, 'text mode: no tool definitions');
+    const system = first.messages[0].content;
+    assert.match(system, /The application has tools of its own, but the user switched them off/);
+    assert.match(system, /Tools you can call:\n- remember\(text: string, id\?: string\)[^\n]*\n- forget\(id: string\)/);
+    assert.doesNotMatch(system, /- wipe/, 'the app\'s tools are not offered while they are switched off');
+    assert.match(second.messages.at(-1).content, /<tool_results>\nremember: Saved as memory m1\.\n<\/tool_results>/);
+    const r = await page.evaluate(() => ({ list: agent.memory.list().map((m) => [m.text, m.source]), ran, shown: [...document.querySelectorAll('.aia-drawer .aia-msg.aia-assistant .aia-md')].pop().textContent }));
+    assert.deepEqual(r.list, [['The user likes tea.', 'agent']]);
+    assert.equal(r.ran, 0);
+    assert.doesNotMatch(r.shown, /"name"/, 'the tool block is not shown to the user');
+    assert.deepEqual(page.errors(), []);
+  } finally {
+    await upstream.close();
+  }
 });

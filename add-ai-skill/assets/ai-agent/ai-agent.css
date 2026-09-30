@@ -469,6 +469,23 @@ body.aia-resizing, body.aia-resizing * { cursor: col-resize !important; user-sel
 .aia-tool-reason { color: var(--aia-text-muted); font-style: italic; }
 .aia-tool-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
 
+/* A screenshot on a chip (the agent looked at the screen), on a question, and waiting in the composer. */
+.aia-tool-shot { padding: 0 9px 9px; }
+.aia-shot { display: block; max-width: 100%; width: auto; height: auto; max-height: 120px; border: 1px solid var(--aia-border-strong); border-radius: var(--aia-radius-sm); background: var(--aia-bg); cursor: zoom-in; }
+.aia-shot:hover { border-color: var(--aia-accent); }
+.aia-shots { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 5px; max-width: 94%; }
+.aia-shot-view { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 14px; background: color-mix(in srgb, var(--aia-bg) 92%, transparent); cursor: zoom-out; }
+.aia-shot-view img { max-width: 100%; max-height: calc(100% - 46px); object-fit: contain; border: 1px solid var(--aia-border-strong); border-radius: var(--aia-radius-sm); box-shadow: var(--aia-shadow); }
+
+/* Settings > Memory */
+.aia-memory-list { display: flex; flex-direction: column; gap: 7px; }
+.aia-memory-row { display: flex; flex-direction: column; gap: 3px; }
+.aia-modal .aia-memory-row textarea { min-height: 0; font-family: inherit; font-size: 13px; line-height: 1.45; resize: vertical; }
+.aia-memory-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10.5px; color: var(--aia-text-faint); }
+.aia-memory-meta .aia-icon-btn { width: 24px; height: 22px; }
+.aia-memory-meta .aia-icon-btn svg { width: 14px; height: 14px; }
+.aia-memory-meta .aia-icon-btn:hover { color: var(--aia-danger); }
+
 /* Settings > Tools */
 .aia-tool-list { display: flex; flex-direction: column; gap: 12px; }
 .aia-tool-group h4 { margin: 0 0 6px; font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--aia-text-muted); }
@@ -579,6 +596,7 @@ body.aia-resizing, body.aia-resizing * { cursor: col-resize !important; user-sel
 
 .aia-composer {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 8px;
   flex: 0 0 auto;
@@ -587,7 +605,8 @@ body.aia-resizing, body.aia-resizing * { cursor: col-resize !important; user-sel
   border-top: 1px solid var(--aia-border);
 }
 .aia-composer textarea {
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  min-width: 0;
   min-height: 40px;
   max-height: 180px;
   padding: 9px 11px;
@@ -602,7 +621,16 @@ body.aia-resizing, body.aia-resizing * { cursor: col-resize !important; user-sel
   overflow-y: auto;
 }
 .aia-composer textarea:focus { outline: none; border-color: var(--aia-accent); box-shadow: var(--aia-ring); }
-.aia-send { width: 42px; height: 40px; padding: 0; flex: 0 0 auto; }
+.aia-send, .aia-shot-btn { width: 42px; height: 40px; padding: 0; flex: 0 0 auto; }
+.aia-shot-btn { width: 38px; color: var(--aia-text-muted); }
+.aia-shot-btn:hover { color: var(--aia-text); }
+.aia-shot-btn svg { width: 18px; height: 18px; }
+.aia-attach { display: flex; flex-wrap: wrap; gap: 7px; flex: 1 0 100%; }
+.aia-attach-item { position: relative; display: inline-flex; }
+.aia-attach-item .aia-shot { max-height: 64px; }
+.aia-attach-remove { position: absolute; top: -6px; right: -6px; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; color: var(--aia-text); background: var(--aia-bg-elevated); border: 1px solid var(--aia-border-strong); border-radius: 50%; cursor: pointer; }
+.aia-attach-remove svg { width: 10px; height: 10px; }
+.aia-attach-remove:hover { color: var(--aia-danger); border-color: var(--aia-danger); }
 .aia-send svg { width: 18px; height: 18px; }
 .aia-send.aia-stop { background: var(--aia-bg-elevated); color: var(--aia-danger); border-color: color-mix(in srgb, var(--aia-danger) 45%, var(--aia-border)); }
 .aia-send.aia-stop:hover { background: var(--aia-danger-soft); filter: none; }
@@ -702,7 +730,7 @@ html.aia-modal-open { overflow: hidden; }
 .aia-modal-title h2 { font-size: 15px; font-weight: 650; }
 .aia-modal-title p { font-size: 11.5px; color: var(--aia-text-muted); }
 
-.aia-tabs { display: flex; gap: 4px; padding: 8px 12px 0; background: var(--aia-bg-elevated); border-bottom: 1px solid var(--aia-border); }
+.aia-tabs { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; padding: 8px 12px 0; background: var(--aia-bg-elevated); border-bottom: 1px solid var(--aia-border); }
 .aia-tab {
   margin-bottom: -1px;
   padding: 7px 14px;

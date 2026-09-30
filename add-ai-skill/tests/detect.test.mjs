@@ -128,3 +128,41 @@ test('createAgentKeys: top-level keys only, strings and comments ignored', () =>
   const src = "createAiAgent({ a: 1, /* b: 2 */ c: { d: 3 }, e: 'f: g', // h: i\n j: [k(l, { m: 1 })], `n`: 2 })";
   assert.deepEqual(createAgentKeys(src), ['a', 'c', 'e', 'j']);
 });
+
+test('detect: which features the runtime has and the integration uses, so an upgrade adds only what is missing', () => {
+  // An app at 1.2: tools in use, no memory, a WebGL view, policy headers.
+  const root = app();
+  copyRuntime(root, 'lib/ai-agent', (t) => t.replace(/export const VERSION = '[^']+'/, "export const VERSION = '1.2.0'"));
+  write(root, 'src/setup.js', INTEGRATION);
+  write(root, 'src/ai-tools.json', '{"tools":{}}');
+  write(root, 'src/view.js', "const gl = canvas.getContext('webgl2');");
+  write(root, 'tests/view.test.js', "const gl = canvas.getContext('webgl');");
+  write(root, '.htaccess', 'Header set Permissions-Policy "display-capture=()"\nHeader set Content-Security-Policy "default-src \'self\'; img-src \'self\'"');
+  const r = detect(root);
+  assert.equal(r.status, 'upgrade');
+  assert.deepEqual([r.features.tools.inRuntime, r.features.tools.options, r.features.tools.config], [true, ['tools'], ['src/ai-tools.json']], 'tools are there: leave them');
+  assert.deepEqual([r.features.memory.inRuntime, r.features.memory.options, r.features.memory.file], [false, [], []], 'memory is to add');
+  assert.deepEqual([r.features.vision.inRuntime, r.features.vision.options], [false, []]);
+  const checks = r.checks.map((c) => `${c.file}: ${c.hint}`).join('\n');
+  assert.match(checks, /src\/view\.js: draws with WebGL[^\n]*`screenshot` hook/);
+  assert.doesNotMatch(checks, /tests\/view\.test\.js/, 'test files are not the app\'s view');
+  assert.match(checks, /\.htaccess: sets display-capture in a Permissions-Policy/);
+  assert.match(checks, /\.htaccess: Content-Security-Policy img-src without data:/);
+
+  // The same app after the upgrade: nothing left to add, and no more hook hint.
+  const done = app();
+  copyRuntime(done, 'lib/ai-agent');
+  write(done, 'src/setup.js', INTEGRATION.replace('tools: appTools,', "tools: appTools, memoryFile: 'ai-memory.json', screenshot: () => view.canvas,"));
+  write(done, 'src/ai-memory.json', '{"version":1,"memories":[]}');
+  write(done, 'src/view.js', "const gl = canvas.getContext('webgl2');");
+  const d = detect(done);
+  assert.equal(d.status, 'current');
+  assert.deepEqual([d.features.memory.inRuntime, d.features.memory.options, d.features.memory.file], [true, ['memoryFile'], ['src/ai-memory.json']]);
+  assert.deepEqual([d.features.vision.inRuntime, d.features.vision.options], [true, ['screenshot']]);
+  assert.deepEqual(d.checks, []);
+
+  // No runtime copy in the folder: the features cannot be judged.
+  const bare = app();
+  write(bare, 'src/setup.js', INTEGRATION);
+  assert.equal(detect(bare).features.memory.inRuntime, null);
+});

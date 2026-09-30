@@ -26,6 +26,7 @@ import { debounce } from './ui/dom.js';
 import { isDevHost } from './ui/layout-check.js';
 import { probeRelay, relayDefaults, adjustForRelay, mergeSettings } from './core/relay-probe.js';
 import { normalizeTool, toolEnabled, toolAvailable, toolsConfigPatch, exportToolsConfig, validateArgs, serializeResult, toolSpecs } from './core/tools.js';
+import { createMemoryStore } from './core/memory.js';
 
 export { PROVIDERS, PROVIDER_IDS } from './core/providers.js';
 export { DEFAULT_SYSTEM_PROMPT } from './core/prompt.js';
@@ -35,8 +36,9 @@ export { AiError } from './core/transport.js';
 export { parseBlockValues } from './core/blocks.js';
 export { probeRelay } from './core/relay-probe.js';
 export { setControlValue } from './ui/dom.js';
+export { parseMemoryFile, exportMemoryFile } from './core/memory.js';
 
-export const VERSION = '1.2.0';
+export const VERSION = '1.3.0';
 
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v) && typeof v.then !== 'function';
 
@@ -53,7 +55,7 @@ export function createAiAgent(options = {}) {
   const o = {
     appId: 'app',
     title: 'AI agent',
-    placeholder: 'Ask about what is on screen…  (Enter to send, Shift+Enter for a new line)',
+    placeholder: 'Ask about what is on screen…',
     welcome: DEFAULT_WELCOME,
     suggestions: [],
     toggle: null,
@@ -73,6 +75,12 @@ export function createAiAgent(options = {}) {
     contextWarnTokens: 3000,
     tools: [],
     toolsConfig: null,
+    memory: true,               // notes kept between conversations (Settings > Memory); false = none
+    memoryFile: null,           // the app's memory file, e.g. 'ai-memory.json' (URL, object, or function)
+    memorySave: null,           // (file) => void | Promise: keep the memories somewhere besides this browser
+    screenshots: true,          // screenshots for models that see images (Settings > Vision); false = none
+    screenshot: null,           // () => canvas | image | Blob | data URL: the app's own way to capture its view
+    screenshotMaxEdge: 1280,    // screenshots are scaled down to this many pixels on their longer edge
     codeActions: [],
     replyActions: [],
     defaults: {},
@@ -114,10 +122,30 @@ export function createAiAgent(options = {}) {
     const s = store.get();
     const [appText, pageText] = await Promise.all([ctx.appText(), ctx.pageText()]);
     const base = s.systemPrompt && s.systemPrompt.trim() ? s.systemPrompt : defaultPrompt();
-    return buildSystemPrompt({ base, appText, pageText, share: s.shareScreen, toolsText: drawer ? drawer.toolPrompt(s) : '' });
+    return buildSystemPrompt({
+      base, appText, pageText, share: s.shareScreen,
+      toolsText: drawer ? drawer.toolPrompt(s) : '',
+      memoryText: drawer ? drawer.memoryPrompt(s) : '',
+      vision: drawer ? drawer.visionOn(s) : false,
+    });
   };
 
   let drawer = null;
+
+  /* Memory: notes kept between conversations — the app's file underneath, this browser's changes on top. */
+  const memory = o.memory === false ? null : createMemoryStore({ namespace, storage });
+  let saveTimer = null;
+  const offMemory = memory ? memory.onChange(({ memories, change }) => {
+    emit('memory', { memories, change });
+    panel?.refreshMemory?.();
+    // The app's own persistence (a file on its server, a user profile): every change made here, never the file load.
+    if (typeof o.memorySave === 'function' && change?.type !== 'base') {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => {
+        Promise.resolve().then(() => o.memorySave(memory.export())).catch((e) => console.warn('[ai-agent] memorySave failed; the memories are still kept in this browser.', e));
+      }, 400);
+    }
+  }) : () => {};
 
   /* Tools: the app-wide catalog (`tools` option, agent.tools.register) plus the current page's `tools`. */
   const appTools = new Map();
@@ -152,8 +180,8 @@ export function createAiAgent(options = {}) {
     const [appText, pageText, viewText, snapshot, system] = await Promise.all([
       ctx.appText(), ctx.pageText(), ctx.viewText(), ctx.snapshot(), systemPrompt(),
     ]);
-    const callable = drawer.toolMode(s) === 'native' && s.toolsEnabled
-      ? toolRegistry.all().filter((t) => toolEnabled(t, s) && toolAvailable(t, ctx.page?.id)) : [];
+    const set = drawer.toolMode(s) === 'native' ? drawer.toolSet(s) : null;
+    const callable = set && set.active ? set.classes.callable : [];
     return {
       status: { state: status.state, currentHash: status.hash, syncedHash: status.syncedHash },
       appText, pageText, viewText, snapshot, system, share: s.shareScreen, hasContent: ctx.hasContent,
@@ -162,15 +190,21 @@ export function createAiAgent(options = {}) {
   };
 
   let relay = null;
-  const panel = createSettingsPanel({
+  let panel = null;
+  panel = createSettingsPanel({
     store, defaultPrompt, getContextInfo, relayHeaders: o.relayHeaders, theme: o.theme, title: o.title, mount: o.mount,
     isolate: o.isolateKeys !== false, warnTokens: o.contextWarnTokens, relayInfo: () => relay,
     getTools: () => toolRegistry.all(), pageId: () => ctx.page?.id,
+    memory,
+    vision: () => (drawer?.capture ? {
+      method: drawer.capture.method(), live: drawer.capture.live(), stop: () => drawer.capture.stop(),
+      model: drawer.probeInfo?.model || '', modelSees: drawer.probeInfo?.vision,
+    } : null),
   });
   let onDialogChange = () => {};
   drawer = new AgentDrawer({
     ctx, store, panel, emit, defaultPrompt,
-    options: { ...o, storage, session: safeStorage('sessionStorage'), onDialogChange: () => onDialogChange(), toolRegistry },
+    options: { ...o, storage, session: safeStorage('sessionStorage'), onDialogChange: () => onDialogChange(), toolRegistry, memoryStore: memory },
   });
 
   // Trailing debounce with a max wait: continuous updates (animation, simulation, live data) still refresh the flag
@@ -178,9 +212,21 @@ export function createAiAgent(options = {}) {
   const changed = debounce(() => drawer.refreshStatus(), o.debounceMs, { maxWait: Math.max(0, Number(o.debounceMaxMs) || 0) });
   onDialogChange = () => changed();
 
-  // Async defaults, the tool config file and the relay probe. Questions wait for this (drawer.ready); nothing else does.
+  // A JSON file of the app (tool config, memory): an object, a URL, or a (possibly async) function.
+  const loadJson = async (source) => {
+    let v = typeof source === 'function' ? await source() : await source;
+    if (typeof v === 'string') {
+      const res = await fetch(new URL(v, globalThis.location?.href).href, { cache: 'no-store', credentials: 'same-origin' });
+      if (!res.ok) throw new Error(`HTTP ${res.status} for ${v}`);
+      v = await res.json();
+    }
+    return v;
+  };
+
+  // Async defaults, the tool config file, the memory file and the relay probe. Questions wait for this (drawer.ready);
+  // nothing else does.
   const needsAsync = !isPlainObject(o.defaults) && o.defaults != null;
-  const ready = (needsAsync || o.relayProbe || o.toolsConfig) ? (async () => {
+  const ready = (needsAsync || o.relayProbe || o.toolsConfig || (memory && o.memoryFile)) ? (async () => {
     let d = syncDefaults;
     if (needsAsync) {
       try {
@@ -193,16 +239,18 @@ export function createAiAgent(options = {}) {
     if (o.toolsConfig) {
       // The app's tool selection (e.g. ai-tools.json): an object, a URL, or a (possibly async) function.
       try {
-        let tc = typeof o.toolsConfig === 'function' ? await o.toolsConfig() : await o.toolsConfig;
-        if (typeof tc === 'string') {
-          const res = await fetch(new URL(tc, globalThis.location?.href).href, { cache: 'no-store', credentials: 'same-origin' });
-          if (!res.ok) throw new Error(`HTTP ${res.status} for ${tc}`);
-          tc = await res.json();
-        }
-        const patch = toolsConfigPatch(tc);
+        const patch = toolsConfigPatch(await loadJson(o.toolsConfig));
         d = { ...d, ...patch, toolStates: { ...(d.toolStates || {}), ...(patch.toolStates || {}) } };
       } catch (e) {
         console.warn('[ai-agent] The toolsConfig could not be loaded; tools keep their built-in defaults.', e);
+      }
+    }
+    if (memory && o.memoryFile) {
+      // The app's memory file (e.g. ai-memory.json): the base that this browser's own memories sit on.
+      try {
+        memory.setBase(await loadJson(o.memoryFile));
+      } catch (e) {
+        console.warn('[ai-agent] The memoryFile could not be loaded; only the memories saved in this browser are used.', e);
       }
     }
     if (o.relayProbe) {
@@ -225,6 +273,7 @@ export function createAiAgent(options = {}) {
   const offSettings = store.onChange((settings) => {
     drawer.probeInfo = { key: '' };
     drawer.refreshSubtitle();
+    drawer.refreshVision();
     drawer.refreshStatus();
     emit('settings', settings);
   });
@@ -281,6 +330,28 @@ export function createAiAgent(options = {}) {
       exportConfig() { return exportToolsConfig(toolRegistry.all(), store.get()); },
     },
 
+    /** Notes kept between conversations (null with `memory: false`). */
+    memory: memory ? {
+      list: () => memory.list(),
+      add: (text) => memory.add(text, { source: 'user' }),
+      update: (id, text) => memory.update(id, text),
+      remove: (id) => memory.remove(id),
+      clear: () => memory.clear(),
+      /** The memories as the JSON an app ships as its memoryFile (e.g. ai-memory.json). */
+      export: () => memory.export(),
+      /** Add the memories of such a file; `{ replace: true }` makes them the whole memory. Returns how many were added. */
+      import: (json, options) => memory.import(json, options),
+    } : null,
+
+    /**
+     * Take a screenshot and put it in the composer for the next question (what the camera button does). With the
+     * browser's screen capture this must be called from a click. Resolves to { width, height, source } or null.
+     */
+    async screenshot() {
+      const shot = await drawer.attachScreenshot();
+      return shot ? { width: shot.width, height: shot.height, source: shot.source } : null;
+    },
+
     on,
     settings: {
       get: () => store.get(),
@@ -290,6 +361,8 @@ export function createAiAgent(options = {}) {
     },
     destroy() {
       changed.cancel();
+      clearTimeout(saveTimer);
+      offMemory();
       offSettings();
       drawer.destroy();
       panel.destroy();

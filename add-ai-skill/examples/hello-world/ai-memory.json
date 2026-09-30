@@ -1,0 +1,7 @@
+{
+  "$comment": "Hello World's starting memories (loaded with the memoryFile option): things the agent should know that are not on screen. Users add their own by asking the agent to remember something, or in Settings > Memory; 'Download ai-memory.json' there writes this format.",
+  "version": 1,
+  "memories": [
+    { "id": "m1", "text": "Keyboard shortcuts in this editor: Ctrl+S saves the document as a file, Ctrl+I opens and closes the agent panel.", "created": "2026-09-30T00:00:00.000Z", "source": "app" }
+  ]
+}

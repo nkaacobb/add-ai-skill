@@ -8,9 +8,12 @@
 // Tools: body.tools [{type:'function', function:{name, description, parameters}}]; the reply streams
 //   delta.tool_calls [{index, id, function:{name, arguments (JSON, in pieces)}}]; the exchange goes back as an
 //   assistant message with tool_calls, then one {role:'tool', tool_call_id, content} per result.
+// Images: a user message with `images` becomes content parts [{type:'text'}, {type:'image_url', image_url:{url:
+//   'data:<mime>;base64,…'}}]. Tool messages are text only, so an image a tool returned (a screenshot) follows the
+//   tool messages of its round in a user message. Checked live against LM Studio with a vision model.
 
 import { requestJson, requestStream, joinUrl, AiError } from '../core/transport.js';
-import { normalizeMessages } from '../core/messages.js';
+import { normalizeMessages, imageChars, dataUrl } from '../core/messages.js';
 import { parseArguments } from '../core/tools.js';
 
 const auth = (key) => (key ? { Authorization: `Bearer ${key}` } : {});
@@ -25,13 +28,25 @@ export function toolTurnMessages(toolTurns = []) {
       tool_calls: turn.calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.arguments || {}) } })),
     });
     for (const r of turn.results) out.push({ role: 'tool', tool_call_id: r.id, content: String(r.content ?? '') });
+    for (const r of turn.results) {
+      if (Array.isArray(r.images) && r.images.length) out.push({ role: 'user', content: withImages('[The image returned by the tool call above]', r.images) });
+    }
   }
   return out;
 }
 
+/** Text plus images as chat-completions content parts. */
+export function withImages(text, images) {
+  return [{ type: 'text', text: text || '(image)' }, ...images.map((i) => ({ type: 'image_url', image_url: { url: dataUrl(i) } }))];
+}
+
 export function buildChat({ cfg, key, system, messages, maxTokens, temperature, stream = true, tools, toolTurns }) {
   const body = {
-    messages: [...(system ? [{ role: 'system', content: system }] : []), ...normalizeMessages(messages), ...toolTurnMessages(toolTurns)],
+    messages: [
+      ...(system ? [{ role: 'system', content: system }] : []),
+      ...normalizeMessages(messages).map((m) => (m.images ? { role: m.role, content: withImages(m.content, m.images) } : m)),
+      ...toolTurnMessages(toolTurns),
+    ],
     stream,
   };
   if (tools?.length) {
@@ -109,20 +124,21 @@ function usageOf(u) {
 export function parseModels(json) {
   const out = [];
   const seen = new Set();
-  const add = (id, label, loaded) => {
+  // `vision` is only set when the server says whether the model sees images (LM Studio does; most servers do not).
+  const add = (id, label, loaded, vision) => {
     if (!id || seen.has(id)) return;
     seen.add(id);
-    out.push({ id, label: label || id, loaded: !!loaded });
+    out.push({ id, label: label || id, loaded: !!loaded, ...(typeof vision === 'boolean' ? { vision } : {}) });
   };
-  // LM Studio native: { models:[{ type:'llm'|'embedding', key, display_name, loaded_instances:[] }] }
+  // LM Studio native: { models:[{ type:'llm'|'embedding', key, display_name, loaded_instances:[], capabilities:{ vision } }] }
   for (const m of Array.isArray(json?.models) ? json.models : []) {
     if (!m || (m.type && m.type !== 'llm' && m.type !== 'vlm')) continue;
-    add(m.key || m.id || m.name, m.display_name, Array.isArray(m.loaded_instances) && m.loaded_instances.length > 0);
+    add(m.key || m.id || m.name, m.display_name, Array.isArray(m.loaded_instances) && m.loaded_instances.length > 0, m.capabilities?.vision ?? (m.type === 'vlm' ? true : undefined));
   }
-  // OpenAI shape: { data:[{ id }] } (LM Studio v0 adds type/state)
+  // OpenAI shape: { data:[{ id }] } (LM Studio v0 adds type 'llm'|'vlm' and state)
   for (const m of Array.isArray(json?.data) ? json.data : []) {
     if (!m || (m.type && /embed/i.test(m.type))) continue;
-    add(m.id || m.name, m.name && m.name !== m.id ? m.name : m.id, m.state === 'loaded');
+    add(m.id || m.name, m.name && m.name !== m.id ? m.name : m.id, m.state === 'loaded', m.type === 'vlm' ? true : m.type === 'llm' && 'state' in m ? false : undefined);
   }
   return [...out.filter((m) => m.loaded), ...out.filter((m) => !m.loaded)];
 }
@@ -134,7 +150,7 @@ export const openaiChat = {
     const r = buildChat({ cfg, key, system, messages, maxTokens, temperature, stream: true, tools, toolTurns });
     let usage;
     const parts = [];
-    const res = await requestStream({ ...r, signal, timeoutMs: cfg.timeoutMs, secrets: [key], fetch }, ({ data }) => {
+    const res = await requestStream({ ...r, signal, timeoutMs: cfg.timeoutMs, secrets: [key], fetch, imageBytes: imageChars(messages, toolTurns) }, ({ data }) => {
       if (!data || data === '[DONE]') return;
       let json;
       try { json = JSON.parse(data); } catch { return; }

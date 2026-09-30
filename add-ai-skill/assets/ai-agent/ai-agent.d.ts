@@ -94,6 +94,28 @@ export interface ToolInfo {
   available: boolean;
 }
 
+/** A note the agent keeps between conversations (Settings > Memory). */
+export interface Memory {
+  /** Stable id the model uses to correct or delete it, e.g. 'm3'. */
+  id: string;
+  /** One short sentence (at most 500 characters). */
+  text: string;
+  /** ISO dates. */
+  created: string;
+  updated?: string;
+  /** Who wrote it: the user in Settings, the agent when asked to remember, or the app's memory file. */
+  source: 'user' | 'agent' | 'app';
+}
+
+/** The memory file an app ships (ai-memory.json); Settings > Memory > "Download ai-memory.json" writes it. */
+export interface MemoryFile {
+  version?: number;
+  memories: Array<string | (Partial<Memory> & { text: string })>;
+}
+
+/** What a `screenshot` hook may return: something that can be drawn, or null to use the browser's screen capture. */
+export type ScreenshotSource = HTMLCanvasElement | OffscreenCanvas | ImageBitmap | HTMLImageElement | HTMLVideoElement | ImageData | Blob | string | null | undefined | false;
+
 export type ProviderId = 'lmstudio' | 'ollama' | 'custom' | 'openai' | 'anthropic' | 'google' | 'deepseek' | 'openrouter';
 
 export interface AgentSettings {
@@ -123,6 +145,14 @@ export interface AgentSettings {
   maxToolSteps: number;
   /** Per-tool on/off, merged over toolsConfig and each tool's `enabled`. */
   toolStates: Record<string, boolean>;
+  /** Add the memories to every conversation. Default true. */
+  memoryEnabled: boolean;
+  /** The agent may save, correct and delete memories when the user asks (built-in tools remember / forget). Default true. */
+  memoryWrite: boolean;
+  /** The model accepts images: the camera button and screenshots are offered. Default true. */
+  vision: boolean;
+  /** The agent may take a screenshot on its own (built-in tool take_screenshot). Default false: only the camera button. */
+  screenshotAuto: boolean;
 }
 
 export interface CodeBlock { language: string; code: string }
@@ -179,8 +209,10 @@ export interface RelayInfo {
   version?: string;
   providers: ProviderId[];
   serverKeys: Partial<Record<ProviderId, boolean>>;
-  /** The server's fixed provider/model choice (public mode), or its suggestion (local mode). */
-  preset: { provider: ProviderId; model: string; models: string[] } | null;
+  /** The server's fixed provider/model choice (public mode), or its suggestion (local mode). `vision` when the config says so. */
+  preset: { provider: ProviderId; model: string; models: string[]; vision?: boolean } | null;
+  /** How many images (screenshots) one request may carry through this relay. 0: none (or a relay older than 1.3). */
+  images: number;
   reason: string;
 }
 
@@ -267,6 +299,34 @@ export interface AiAgentOptions {
   tools?: ToolDefinition[];
   /** The app's default tool selection: a URL (e.g. 'ai-tools.json'), an object, or a (possibly async) function. */
   toolsConfig?: string | ToolsConfig | Promise<ToolsConfig> | (() => ToolsConfig | Promise<ToolsConfig>) | null;
+  /**
+   * Memory: notes the agent keeps between conversations (Settings > Memory; the agent saves one when the user asks it
+   * to remember something). Default true; false removes the tab, the tools and the prompt section.
+   */
+  memory?: boolean;
+  /**
+   * The app's memory file: a URL (e.g. 'ai-memory.json'), an object, or a (possibly async) function. Its memories are
+   * the starting point for every user; what a user adds, edits or deletes is kept in their browser on top of it.
+   */
+  memoryFile?: string | MemoryFile | Promise<MemoryFile> | (() => MemoryFile | Promise<MemoryFile>) | null;
+  /**
+   * Called (debounced) with the whole memory file after every change made in this browser, so an app with a backend
+   * can keep it somewhere durable (a file on its server, the user's profile). Pair it with `memoryFile` for loading.
+   */
+  memorySave?: ((file: MemoryFile) => void | Promise<void>) | null;
+  /**
+   * Screenshots for models that see images (Settings > Vision, the camera button, the agent's take_screenshot tool).
+   * Default true; false removes them.
+   */
+  screenshots?: boolean;
+  /**
+   * The app's own picture of what the user is looking at (best for canvas / WebGL views; needs no permission).
+   * Without it — or when it returns null — the browser's screen capture of this tab is used (the browser asks first).
+   * A canvas returned synchronously is read at once, so a WebGL canvas works when the hook renders a frame first.
+   */
+  screenshot?: ((info: { reason: 'user' | 'agent' }) => ScreenshotSource | Promise<ScreenshotSource>) | null;
+  /** Screenshots are scaled down so their longer edge is at most this many pixels. Default 1280. */
+  screenshotMaxEdge?: number;
   codeActions?: CodeAction[];
   replyActions?: ReplyAction[];
   /**
@@ -288,8 +348,10 @@ export interface AiAgentOptions {
  * 'open' detail: {} — or { resumed: true } when `resume` reopened the drawer during createAiAgent (replayed once, to
  * listeners registered in the same tick; later, check agent.isOpen()). 'relay' detail: RelayInfo (relayProbe).
  * 'tool' detail: { name, args, status: 'ok'|'error'|'declined'|'off'|'skipped', result }. 'tool-state': { name, enabled }.
+ * 'memory' detail: { memories: Memory[], change: { type: 'add'|'update'|'remove'|'replace'|'clear'|'base', id? } }.
+ * 'screenshot' detail: { by: 'user'|'agent', width, height, source: 'app'|'screen' }.
  */
-export type AgentEvent = 'open' | 'close' | 'send' | 'reply' | 'error' | 'context' | 'settings' | 'relay' | 'tool' | 'tool-state';
+export type AgentEvent = 'open' | 'close' | 'send' | 'reply' | 'error' | 'context' | 'settings' | 'relay' | 'tool' | 'tool-state' | 'memory' | 'screenshot';
 
 export interface AiAgent {
   open(): void;
@@ -301,7 +363,7 @@ export interface AiAgent {
   /** Stop the reply that is streaming. */
   stop(): void;
   newChat(): void;
-  openSettings(tab?: 'model' | 'agent' | 'context'): void;
+  openSettings(tab?: 'model' | 'agent' | 'tools' | 'memory' | 'vision' | 'context'): void;
 
   setApp(app: Hook<AppContext>): void;
   /** Call on navigation. */
@@ -329,6 +391,24 @@ export interface AiAgent {
     /** The current selection as an ai-tools.json object. */
     exportConfig(): ToolsConfig;
   };
+  /** The notes kept between conversations; null with `memory: false`. Changes are saved at once and fire 'memory'. */
+  memory: {
+    list(): Memory[];
+    /** Add a note (an identical one is returned instead). Throws when the text is empty or memory is full (100). */
+    add(text: string): Memory;
+    update(id: string, text: string): Memory | null;
+    remove(id: string): Memory | null;
+    clear(): void;
+    /** The memories as an ai-memory.json object. */
+    export(): MemoryFile;
+    /** Add the memories of a file; { replace: true } makes them the whole memory. Returns how many were added. */
+    import(file: MemoryFile | Array<string | Partial<Memory>>, options?: { replace?: boolean }): number;
+  } | null;
+  /**
+   * Take a screenshot and put it in the composer for the next question (what the camera button does). With the
+   * browser's screen capture, call it from a click handler. Resolves to null when none was taken.
+   */
+  screenshot(): Promise<{ width: number; height: number; source: 'app' | 'screen' } | null>;
   /** Subscribe to the flag; called immediately with the current status. Returns an unsubscribe function. */
   onContextStatus(fn: (status: ContextStatus) => void): () => void;
   /** Force the page to be re-sent with the next question. */
@@ -366,6 +446,10 @@ export function setControlValue(target: string | Element, value: unknown): boole
 
 /** GET the relay and report whether it will serve this page. Never throws. */
 export function probeRelay(url: string, options?: { timeoutMs?: number; headers?: Record<string, string>; fetch?: typeof fetch }): Promise<RelayInfo>;
+
+/** Memories from an ai-memory.json object (or a plain array); entries without an id get one. */
+export function parseMemoryFile(json: unknown): Memory[];
+export function exportMemoryFile(memories: Memory[]): MemoryFile;
 
 export function renderMarkdown(markdown: string, options?: { codeActions?: Array<Pick<CodeAction, 'id' | 'label' | 'title' | 'when'>> }): { html: string; code: CodeBlock[] };
 export function hashText(text: string): string;

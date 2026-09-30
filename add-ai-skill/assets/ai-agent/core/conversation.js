@@ -14,11 +14,14 @@
 //
 // Transcript record: { id, role: 'user'|'assistant', content, at,
 //                      snapshot?: { hash, text?, pageId, pageTitle, chars, totalChars, truncated },
-//                      sync?: 'attached'|'unchanged'|'off'|'empty' }
+//                      sync?: 'attached'|'unchanged'|'off'|'empty',
+//                      shots?: [{ id, thumb, width, height }]   screenshots attached to a question (ui/capture.js) }
 
 import { shortHash } from './hash.js';
 
 export const DEFAULT_HISTORY_MESSAGES = 20;
+/** Screenshots are large: only the newest questions that carry one are sent with their image. */
+export const DEFAULT_IMAGE_MESSAGES = 2;
 
 /** Index of the first transcript entry that will still be sent, for a transcript of `length` entries. */
 export function windowStart(length, historyMessages = DEFAULT_HISTORY_MESSAGES) {
@@ -113,13 +116,25 @@ export function supersededStub(snapshot) {
  * @param {number} o.historyMessages how many transcript entries are sent
  * @param {string} o.viewText        current view state (cursor, selection…), attached to the new question only
  * @param {string|null} o.unchangedHash  set when the screen matches an earlier snapshot, to say so explicitly
- * @returns {Array<{role: 'user'|'assistant', content: string}>}
+ * @param {((shot) => ({mime, data}|null))|null} [o.imageFor]  the image of a screenshot while it is still in memory;
+ *        null when the model cannot see images. Only the newest `imageMessages` questions with screenshots carry them.
+ * @param {number} [o.imageMessages]
+ * @returns {Array<{role: 'user'|'assistant', content: string, images?: Array<{mime, data}>}>}
  */
-export function buildRequestMessages({ messages = [], historyMessages = DEFAULT_HISTORY_MESSAGES, viewText = '', unchangedHash = null }) {
+export function buildRequestMessages({ messages = [], historyMessages = DEFAULT_HISTORY_MESSAGES, viewText = '', unchangedHash = null, imageFor = null, imageMessages = DEFAULT_IMAGE_MESSAGES }) {
   const start = windowStart(messages.length, historyMessages);
   const windowed = messages.slice(start);
   const latest = latestSnapshot(windowed, 0);
   const lastIndex = windowed.length - 1;
+
+  // Which questions still send their screenshots: the newest ones whose images are available.
+  const imagesAt = new Map();
+  for (let i = lastIndex; i >= 0 && imagesAt.size < Math.max(0, imageMessages) && imageFor; i--) {
+    const m = windowed[i];
+    if (m.role !== 'user' || !Array.isArray(m.shots) || !m.shots.length) continue;
+    const images = m.shots.map((s) => imageFor(s)).filter(Boolean);
+    if (images.length) imagesAt.set(i, images);
+  }
 
   return windowed.map((m, i) => {
     if (m.role !== 'user') return { role: 'assistant', content: `${actionsLine(m.actions)}${String(m.content ?? '')}` };
@@ -132,7 +147,14 @@ export function buildRequestMessages({ messages = [], historyMessages = DEFAULT_
       if (!m.snapshot && unchangedHash) parts.push(`[The screen is unchanged since page snapshot ${shortHash(unchangedHash)}: it is still current.]`);
       if (viewText) parts.push(`<view_state>\n${viewText}\n</view_state>`);
     }
+    const images = imagesAt.get(i);
+    if (Array.isArray(m.shots) && m.shots.length) {
+      const n = m.shots.length;
+      parts.push(images
+        ? `[${images.length === 1 ? 'A screenshot' : `${images.length} screenshots`} of the user's screen, taken when this message was sent, ${images.length === 1 ? 'is' : 'are'} attached.]`
+        : `[${n === 1 ? 'A screenshot was' : `${n} screenshots were`} attached to this message; ${n === 1 ? 'it is' : 'they are'} not included any more.]`);
+    }
     parts.push(String(m.content ?? ''));
-    return { role: 'user', content: parts.join('\n\n') };
+    return images ? { role: 'user', content: parts.join('\n\n'), images } : { role: 'user', content: parts.join('\n\n') };
   });
 }

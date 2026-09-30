@@ -198,9 +198,10 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Start a headless browser with a throwaway profile and connect to its first tab.
+ * `args`: extra browser switches, e.g. '--auto-accept-this-tab-capture' (tests of the screen-capture path).
  * @returns {Promise<{page: Page, executable: string, close: () => Promise<void>}>}
  */
-export async function launchBrowser({ executable = '', headless = true, width = 1366, height = 900, timeoutMs = 20000 } = {}) {
+export async function launchBrowser({ executable = '', headless = true, width = 1366, height = 900, timeoutMs = 20000, args: extraArgs = [] } = {}) {
   const exe = findBrowser(executable);
   if (!exe) throw new Error('No Chromium-based browser found (Edge, Chrome or Chromium). Set AIA_BROWSER to its path.');
   if (typeof WebSocket !== 'function') throw new Error('This needs Node 22 or newer (global WebSocket).');
@@ -209,7 +210,7 @@ export async function launchBrowser({ executable = '', headless = true, width = 
     '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--disable-background-networking', '--disable-sync', '--disable-component-update', '--disable-default-apps',
     '--disable-features=Translate,MediaRouter,OptimizationHints', `--window-size=${width},${height}`,
-    ...(headless ? ['--headless=new'] : []), 'about:blank',
+    ...(headless ? ['--headless=new'] : []), ...extraArgs, 'about:blank',
   ];
   const child = spawn(exe, args, { stdio: 'ignore' });
   child.on('error', () => { /* reported by the timeout below */ });

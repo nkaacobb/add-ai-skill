@@ -7,6 +7,7 @@ export const ERROR_CODES = Object.freeze(['auth', 'missing-model', 'bad-endpoint
   'rate-limit', 'refused', 'malformed', 'cancelled', 'budget']);
 
 export const MAX_REQUEST_BYTES = 1024 * 1024;
+export const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 export const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 export class AiError extends Error {
@@ -172,7 +173,10 @@ export function createSseParser(onRecord) {
 function prepare(o) {
   const url = absoluteUrl(o.url);
   const payload = o.body === undefined ? undefined : JSON.stringify(o.body);
-  if (payload && payload.length > (o.maxRequestBytes || MAX_REQUEST_BYTES)) {
+  // Attached images (screenshots) do not count against the text cap; they have their own.
+  const images = Math.max(0, Number(o.imageBytes) || 0);
+  if (images > MAX_IMAGE_BYTES) throw new AiError('budget', `The attached images are larger than ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MB. Remove a screenshot and try again.`);
+  if (payload && payload.length - images > (o.maxRequestBytes || MAX_REQUEST_BYTES)) {
     throw new AiError('budget', `The request is larger than ${Math.round((o.maxRequestBytes || MAX_REQUEST_BYTES) / 1024)} KB. ${GUIDE.budget}`);
   }
   const init = {

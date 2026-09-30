@@ -274,6 +274,57 @@ function relaySuite(name, start, { skip = false } = {}) {
     } finally { await relay.close(); await upstream.close(); }
   });
 
+  test(`${name}: images (screenshots) reach the provider from questions and tool results, within their own limits`, { skip, timeout: 30000 }, async () => {
+    const upstream = await startFakeUpstream({ reply: ['I see it.'] });
+    const preset = { provider: 'custom', models: ['fake-model'], baseUrl: upstream.url, vision: true };
+    const relay = await start(publicConfig(upstream, tmp('data'), { preset, limits: { maxImages: 2, maxImageBytes: 200, maxBodyBytes: 700 } }));
+    const png = { mime: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' };
+    const url = `data:image/png;base64,${png.data}`;
+    const post = (extra) => request(relay.url, { method: 'POST', headers: pageHeaders(relay.url), body: chatBody({ system: '', ...extra }) });
+    try {
+      const info = await request(relay.url);
+      assert.equal(info.json.images, 2, 'the GET reply says how many images a request may carry');
+      assert.equal(info.json.preset.vision, true, 'and whether the preset model sees images');
+
+      const r1 = await post({ messages: [{ role: 'user', content: 'What is this?', images: [png] }] });
+      assert.equal(r1.status, 200, r1.text);
+      assert.deepEqual(upstream.lastChat().body.messages.at(-1), { role: 'user', content: [{ type: 'text', text: 'What is this?' }, { type: 'image_url', image_url: { url } }] });
+
+      // A screenshot a tool took: the tool message stays text, the image follows it.
+      const toolTurns = [{ text: '', calls: [{ id: 'c1', name: 'take_screenshot', arguments: {} }], results: [{ id: 'c1', name: 'take_screenshot', content: 'Screenshot taken.', images: [png] }] }];
+      const r2 = await post({ toolTurns, turnId: 't1' });
+      assert.equal(r2.status, 200, r2.text);
+      const sent = upstream.lastChat().body.messages;
+      assert.deepEqual(sent.slice(-2).map((m) => m.role), ['tool', 'user']);
+      assert.equal(sent.at(-2).content, 'Screenshot taken.');
+      assert.equal(sent.at(-1).content[1].image_url.url, url);
+
+      // Images come on top of the text cap (700 bytes here): 2 images + ~500 bytes of text pass, the same text + 300 more does not.
+      assert.equal((await post({ messages: [{ role: 'user', content: 'x'.repeat(380), images: [png, png] }] })).status, 200);
+      const tooMuchText = await post({ messages: [{ role: 'user', content: 'x'.repeat(800), images: [png] }] });
+      assert.deepEqual([tooMuchText.status, tooMuchText.json.error.code], [413, 'budget']);
+
+      const three = await post({ messages: [{ role: 'user', content: 'a', images: [png, png, png] }] });
+      assert.deepEqual([three.status, three.json.error.code], [413, 'budget']);
+      assert.match(three.json.error.message, /Too many screenshots/);
+      const large = await post({ messages: [{ role: 'user', content: 'a', images: [{ mime: 'image/jpeg', data: 'A'.repeat(300) }] }] });
+      assert.deepEqual([large.status, large.json.error.code], [413, 'budget']);
+      for (const bad of [{ mime: 'image/svg+xml', data: png.data }, { mime: 'image/png', data: 'not base64 <script>' }, { mime: 'image/png' }]) {
+        const r = await post({ messages: [{ role: 'user', content: 'a', images: [bad] }] });
+        assert.deepEqual([r.status, r.json.error.code], [400, 'malformed'], JSON.stringify(bad).slice(0, 60));
+      }
+    } finally { await relay.close(); await upstream.close(); }
+
+    const upstream2 = await startFakeUpstream();
+    const none = await start(publicConfig(upstream2, tmp('data'), { limits: { maxImages: 0 } }));
+    try {
+      assert.equal((await request(none.url)).json.images, 0);
+      const r = await request(none.url, { method: 'POST', headers: pageHeaders(none.url), body: chatBody({ messages: [{ role: 'user', content: 'a', images: [png] }] }) });
+      assert.deepEqual([r.status, r.json.error.code], [400, 'refused'], 'a relay with images switched off says so instead of dropping them');
+      assert.equal(upstream2.chats().length, 0);
+    } finally { await none.close(); await upstream2.close(); }
+  });
+
   test(`${name}: misconfiguration: generic for visitors, details only for this computer`, { skip, timeout: 30000 }, async () => {
     const relay = await start({ mode: 'public', preset: { provider: 'openai', models: ['gpt-x'] } });   // no key
     try {

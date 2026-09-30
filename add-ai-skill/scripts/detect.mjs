@@ -9,8 +9,11 @@
 //   - relays (relay.php / relay.mjs), their version, edits (1.0 constants, keys or checks added inside the file) and
 //     config files (names only: never their contents, which may hold keys);
 //   - the integration: files that call createAiAgent() (the appId, the options used), the integration record
-//     (ai-agent.integration.json), tool config files (ai-tools.json);
-//   - app code that looks like a workaround a newer runtime covers (hints to check, not certainties).
+//     (ai-agent.integration.json), tool config files (ai-tools.json), memory files (ai-memory.json);
+//   - which features the installed runtime has and which of them the integration uses (tools, memory, vision), so an
+//     upgrade adds only what is missing;
+//   - app code that looks like a workaround a newer runtime covers, and things to check for the new features (a
+//     canvas/WebGL view that wants a screenshot hook, a Permissions-Policy or CSP header) — hints, not certainties.
 // Then it says what to do: build (no agent yet), upgrade (older version), or nothing to upgrade.
 // Exit code: 0 always (it only reports).
 
@@ -29,6 +32,13 @@ const MAX_BYTES = 2 * 1024 * 1024;
 
 export const normalizedHash = (text) => crypto.createHash('sha256').update(String(text).replace(/^﻿/, '').replace(/\r\n?/g, '\n'), 'utf8').digest('hex');
 const cmpVersion = (a, b) => String(a).localeCompare(String(b), 'en', { numeric: true });
+
+/** Features an upgrade can add, the runtime version each arrived in, and the createAiAgent options that show use. */
+export const FEATURES = [
+  { id: 'tools', since: '1.2.0', what: 'the agent acts in the app through tools', options: ['tools', 'toolsConfig'], doc: 'references/tools.md' },
+  { id: 'memory', since: '1.3.0', what: 'notes kept between conversations (Settings > Memory)', options: ['memoryFile', 'memorySave'], doc: 'references/memory-and-vision.md' },
+  { id: 'vision', since: '1.3.0', what: 'screenshots for models that see images (Settings > Vision)', options: ['screenshot', 'screenshotMaxEdge'], doc: 'references/memory-and-vision.md' },
+];
 
 export function skillInfo() {
   const js = fs.readFileSync(path.join(SKILL, 'assets', 'ai-agent', 'ai-agent.js'), 'utf8');
@@ -138,6 +148,20 @@ function workaroundHints(file, text) {
   return hints.map((h) => ({ file, hint: h }));
 }
 
+/** Things in the app that matter for memory and vision (1.3): where a screenshot hook or a policy change may be needed. */
+function featureHints(file, text) {
+  const hints = [];
+  if (/getContext\(\s*['"`](webgl2?|experimental-webgl|webgpu|bitmaprenderer)['"`]|WebGLRenderer|new\s+(BABYLON\.)?Engine\(|PIXI\.Application|regl\(|\bnew\s+Deck\(/.test(text)) {
+    hints.push('draws with WebGL / a GPU canvas: the browser screen capture shows it as part of the whole page; if this canvas IS the view (or a share prompt is unwanted), add a `screenshot` hook that renders a frame and returns the canvas');
+  } else if (/getContext\(\s*['"`]2d['"`]/.test(text)) {
+    hints.push('draws on a 2D canvas: if this canvas is the main view, a `screenshot` hook returning it gives the agent the picture without a share prompt');
+  }
+  if (/Permissions-Policy|Feature-Policy/i.test(text) && /display-capture/i.test(text)) hints.push('sets display-capture in a Permissions-Policy: the browser\'s screen capture needs display-capture=(self)');
+  else if (/Permissions-Policy/i.test(text)) hints.push('sets a Permissions-Policy: check it does not switch off display-capture (the browser\'s screen capture)');
+  if (/Content-Security-Policy/i.test(text) && /img-src/i.test(text) && !/img-src[^;"']*data:/i.test(text)) hints.push('Content-Security-Policy img-src without data: — screenshot thumbnails in the chat are data: images');
+  return hints.map((h) => ({ file, hint: h }));
+}
+
 export function detect(appRoot, skill = skillInfo()) {
   const root = path.resolve(appRoot);
   const files = walk(root);
@@ -148,7 +172,9 @@ export function detect(appRoot, skill = skillInfo()) {
   const integrations = [];
   const records = [];
   const toolConfigs = [];
+  const memoryFiles = [];
   const hints = [];
+  const checks = [];
   const runtimeDirs = [];
 
   for (const f of files) {
@@ -181,11 +207,14 @@ export function detect(appRoot, skill = skillInfo()) {
       continue;
     }
     if (base === 'ai-tools.json') { toolConfigs.push(rel(f)); continue; }
+    if (base === 'ai-memory.json') { memoryFiles.push(rel(f)); continue; }
+    if (base === '.htaccess' || /\.conf$/i.test(base)) { const t = read(f); if (t) checks.push(...featureHints(rel(f), t)); continue; }
     if (!CODE_EXT.has(path.extname(f).toLowerCase())) continue;
     const t = read(f);
     if (!t) continue;
     if (/createAiAgent\s*\(/.test(t) && !/export function createAiAgent/.test(t)) integrations.push({ ...integrationInfo(f, t), file: rel(f) });
     if (/createAiAgent|contextChanged|aia-|ai-agent/.test(t)) hints.push(...workaroundHints(rel(f), t));
+    if (checks.length < 12 && !/(^|\/)(tests?|__tests__|spec|e2e)\/|\.(test|spec)\.[a-z]+$/i.test(rel(f))) checks.push(...featureHints(rel(f), t));
   }
   for (const f of files) {
     if (path.extname(f).toLowerCase() === '.css' && !inRuntime(f)) {
@@ -203,6 +232,20 @@ export function detect(appRoot, skill = skillInfo()) {
   else if (relays.some((r) => cmpVersion(r.version, skill.runtimeVersion) < 0)) status = 'upgrade';
   else status = 'current';
 
+  // Per feature: is it in the installed runtime, and does the integration use it? (An upgrade adds what is missing.)
+  const used = new Set(integrations.flatMap((i) => i.options));
+  const features = {};
+  for (const ft of FEATURES) {
+    features[ft.id] = {
+      since: ft.since,
+      inRuntime: oldest ? cmpVersion(oldest, ft.since) >= 0 : null,      // null: no runtime copy found
+      options: ft.options.filter((o) => used.has(o)),
+    };
+  }
+  features.tools.config = toolConfigs;
+  features.memory.file = memoryFiles;
+  const hasScreenshotHook = features.vision.options.includes('screenshot');
+
   return {
     app: root,
     skill: { skillVersion: skill.skillVersion, runtimeVersion: skill.runtimeVersion },
@@ -213,8 +256,11 @@ export function detect(appRoot, skill = skillInfo()) {
     integrations,
     records,
     toolConfigs,
+    memoryFiles,
     hints,
-    features: { tools: integrations.some((i) => i.options.includes('tools')), toolConfig: toolConfigs.length > 0, record: records.length > 0 },
+    // Only what is still open: no canvas hint once the integration has a screenshot hook.
+    checks: checks.filter((c) => !(hasScreenshotHook && /`screenshot` hook/.test(c.hint))).slice(0, 8),
+    features: { ...features, record: records.length > 0 },
   };
 }
 
@@ -224,7 +270,7 @@ function report(r) {
   say(`add-ai-skill ${r.skill.skillVersion} (runtime ${r.skill.runtimeVersion}) · app: ${r.app}`);
   say('');
   if (r.status === 'none') {
-    say('No AI agent found in this app: follow the normal workflow (SKILL.md steps 1-12).');
+    say('No AI agent found in this app: follow the normal workflow (SKILL.md steps 1-13).');
     return out.join('\n');
   }
   for (const rt of r.runtimes) {
@@ -243,12 +289,28 @@ function report(r) {
   if (r.integrations.length > 1) say('          More than one createAiAgent() call: make sure only one runs (one agent per app).');
   for (const rec of r.records) say(`Record    ${rec.file}  (skill ${rec.data?.skillVersion || '?'}, updated ${rec.data?.updated || '?'})`);
   if (!r.records.length) say('Record    none yet — write ai-agent.integration.json at the end of the upgrade (references/upgrading.md).');
-  for (const t of r.toolConfigs) say(`Tools     ${t}`);
-  if (!r.features.tools) say('Tools     none registered — the app can gain tools (references/tools.md).');
+  say('');
+  say(`Features  (in the installed runtime? · used by the integration?)`);
+  for (const ft of FEATURES) {
+    const f = r.features[ft.id];
+    const has = f.inRuntime === null ? `runtime copy not found (needs ${ft.since}+)` : f.inRuntime ? 'in the runtime' : `NOT in the runtime (arrives with ${ft.since})`;
+    const extra = ft.id === 'tools' ? f.config : ft.id === 'memory' ? f.file : [];
+    const usedBy = [...f.options, ...extra];
+    const use = usedBy.length ? `used: ${usedBy.join(', ')}`
+      : ft.id === 'tools' ? 'not used — the app can gain tools'
+        : ft.id === 'memory' ? (f.inRuntime ? 'on by default; no app memory file yet (ai-memory.json + memoryFile)' : 'to add: comes with the runtime; seed ai-memory.json')
+          : (f.inRuntime ? 'on by default with the browser\'s screen capture; no `screenshot` hook' : 'to add: comes with the runtime; decide on a `screenshot` hook');
+    say(`  ${ft.id.padEnd(7)} ${has} · ${use}  (${ft.doc})`);
+  }
   if (r.hints.length) {
     say('');
     say('Check (possible workarounds a newer runtime covers):');
     for (const h of r.hints) say(`  · ${h.file}: ${h.hint}`);
+  }
+  if (r.checks.length) {
+    say('');
+    say('Check for memory and vision:');
+    for (const h of r.checks) say(`  · ${h.file}: ${h.hint}`);
   }
   say('');
   if (r.status === 'upgrade') {
@@ -256,7 +318,7 @@ function report(r) {
     say(`=> UPGRADE: an agent is already built in (runtime ${from}). Do NOT build a second one. Follow references/upgrading.md,`);
     say(`   reading CHANGELOG.md from ${from} to ${r.skill.runtimeVersion}.`);
   } else if (r.status === 'current') {
-    say(`=> CURRENT: the runtime is up to date (${r.skill.runtimeVersion}). Offer the features the app does not use yet (references/upgrading.md, step 5),`);
+    say(`=> CURRENT: the runtime is up to date (${r.skill.runtimeVersion}). Offer the features the app does not use yet (references/upgrading.md, U6),`);
     say('   or make the change the user asked for. Do NOT build a second agent.');
   } else {
     say('=> An integration calls createAiAgent() but no runtime copy was found (bundled from a package, or outside this folder).');

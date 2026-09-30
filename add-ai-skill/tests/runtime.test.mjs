@@ -9,7 +9,8 @@ import { ContextManager, describe, clip } from '../assets/ai-agent/core/context.
 import { planTurn, contextState, buildRequestMessages, snapshotBlock } from '../assets/ai-agent/core/conversation.js';
 import { buildSystemPrompt, DEFAULT_SYSTEM_PROMPT } from '../assets/ai-agent/core/prompt.js';
 import { splitReasoning } from '../assets/ai-agent/core/reasoning.js';
-import { normalizeMessages, estimateTokens } from '../assets/ai-agent/core/messages.js';
+import { normalizeMessages, estimateTokens, cleanImages, imageChars } from '../assets/ai-agent/core/messages.js';
+import { createMemoryStore, buildMemoryPrompt, parseMemoryFile, memoryText } from '../assets/ai-agent/core/memory.js';
 import { createSseParser, requestStream, classifyHttp, joinUrl, redact, AiError } from '../assets/ai-agent/core/transport.js';
 import { sanitizeSettings, createSettingsStore, profileFor } from '../assets/ai-agent/core/settings.js';
 import { streamChat } from '../assets/ai-agent/core/client.js';
@@ -436,7 +437,7 @@ test('probeRelay: available relay with a preset, 1.0 relays, static servers (PHP
 });
 
 test('relay probe layering: defaults follow the probe; saved settings stay usable (adjustForRelay)', () => {
-  const info = { url: 'api/relay.php', available: true, mode: 'public', preset: { provider: 'openai', model: 'm1', models: ['m1', 'm2'] } };
+  const info = { url: 'api/relay.php', available: true, mode: 'public', images: 4, preset: { provider: 'openai', model: 'm1', models: ['m1', 'm2'] } };
   assert.deepEqual(relayDefaults(info), { transport: 'relay', relayUrl: 'api/relay.php', provider: 'openai', profiles: { openai: { model: 'm1' } } });
   assert.deepEqual(relayDefaults({ available: false }), { transport: 'direct' });
   const stale = sanitizeSettings({ provider: 'anthropic', transport: 'relay', relayUrl: 'api/relay.php', profiles: { openai: { model: 'old' } } });
@@ -633,4 +634,207 @@ test('relay adapter: tools, the exchange and the turn id go out; tool_call event
   const r = await streamChat({ settings, keyFor: () => '', system: '', messages: [{ role: 'user', content: 'q' }], tools: SPECS, toolTurns: TURNS, turnId: 't1', fetch });
   assert.deepEqual(r.toolCalls, [{ id: 'c1', name: 'filter_orders', arguments: { status: 'open' } }]);
   assert.deepEqual([sent.tools, sent.toolTurns, sent.turnId], [SPECS, TURNS, 't1']);
+});
+
+/* ------------------------------------------------------------------ memory */
+
+test('memory: the app\'s file is the base; this browser stores only its own memories, edits and deletions', () => {
+  const storage = memStorage();
+  let clock = Date.parse('2026-03-01T10:00:00Z');
+  const make = () => createMemoryStore({ namespace: 'mem', storage, now: () => (clock += 1000) });
+  const mem = make();
+  const heard = [];
+  mem.onChange((e) => heard.push([e.change.type, e.memories.length]));
+  assert.deepEqual(mem.list(), []);
+
+  mem.setBase({ memories: [{ id: 'm1', text: 'Prefers metric units.', created: '2026-01-01T00:00:00.000Z' }, 'The easter egg opens with Ctrl+Shift+E.'] });
+  assert.deepEqual(mem.list().map((m) => [m.id, m.text, m.source]), [['m1', 'Prefers metric units.', 'app'], ['m2', 'The easter egg opens with Ctrl+Shift+E.', 'app']], 'plain strings get ids');
+  assert.equal(storage._m.has('mem.memory'), false, 'nothing is stored while the user has changed nothing');
+
+  const added = mem.add('  Likes the\ndark   colour map. ', { source: 'agent' });
+  assert.deepEqual([added.id, added.text, added.source], ['m3', 'Likes the dark colour map.', 'agent'], 'one line, next free id');
+  assert.equal(mem.add('likes the dark colour map.').id, 'm3', 'the same note is not saved twice');
+  assert.throws(() => mem.add('   '), /needs some text/);
+
+  assert.equal(mem.update('m1', 'Prefers imperial units.').text, 'Prefers imperial units.');
+  assert.equal(mem.update('nope', 'x'), null);
+  assert.equal(mem.remove('m2').id, 'm2');
+  assert.equal(mem.remove('m2'), null);
+  assert.deepEqual(mem.list().map((m) => m.id), ['m1', 'm3']);
+  const stored = JSON.parse(storage._m.get('mem.memory'));
+  assert.deepEqual([stored.items.map((m) => m.id).sort(), stored.deleted], [['m1', 'm3'], ['m2']], 'only the differences from the file are stored');
+  assert.deepEqual(heard.map((h) => h[0]), ['base', 'add', 'update', 'remove']);
+
+  // A new page load: the same result from storage + the file. A newer file entry wins over an older local edit.
+  const again = make();
+  again.setBase({ memories: [{ id: 'm1', text: 'Prefers metric units.', created: '2026-01-01T00:00:00.000Z' }, { id: 'm2', text: 'The easter egg opens with Ctrl+Shift+E.' }] });
+  assert.deepEqual(again.list().map((m) => [m.id, m.text]), [['m1', 'Prefers imperial units.'], ['m3', 'Likes the dark colour map.']]);
+  again.setBase({ memories: [{ id: 'm1', text: 'Prefers SI units.', created: '2026-01-01T00:00:00.000Z', updated: '2027-01-01T00:00:00.000Z' }, { id: 'm3', text: 'Likes the dark colour map.' }] });
+  assert.deepEqual(again.list().map((m) => [m.id, m.text, m.source]), [['m1', 'Prefers SI units.', 'app'], ['m3', 'Likes the dark colour map.', 'app']], 'what the file now covers is dropped from this browser');
+  assert.equal(storage._m.has('mem.memory'), false);
+
+  // Export / import / replace (Settings > Memory).
+  const file = again.export();
+  assert.deepEqual([file.version, file.memories.map((m) => m.id)], [1, ['m1', 'm3']]);
+  assert.deepEqual(parseMemoryFile(file).map((m) => m.text), ['Prefers SI units.', 'Likes the dark colour map.']);
+  assert.equal(again.import(['Likes the dark colour map.', { id: 'm3', text: 'Uses a 27-inch monitor.' }]), 1, 'known texts are skipped; an id that is taken gets the next free one');
+  assert.deepEqual(again.list().map((m) => [m.id, m.text]), [['m1', 'Prefers SI units.'], ['m3', 'Likes the dark colour map.'], ['m4', 'Uses a 27-inch monitor.']]);
+  again.replaceAll([{ id: 'm3', text: 'Likes the light colour map.' }, { text: 'New one.' }]);
+  assert.deepEqual(again.list().map((m) => [m.id, m.text]), [['m3', 'Likes the light colour map.'], ['m5', 'New one.']]);
+  assert.deepEqual(JSON.parse(storage._m.get('mem.memory')).deleted, ['m1'], 'a file memory the user removed stays removed');
+  again.clear();
+  assert.deepEqual(again.list(), []);
+
+  const small = createMemoryStore({ namespace: 'small', storage: memStorage(), max: 2, maxChars: 20 });
+  small.add('one');
+  assert.equal(small.add('x'.repeat(50)).text.length, 20, 'long notes are cut');
+  assert.throws(() => small.add('three'), /Memory is full \(2 entries\)/);
+  assert.equal(memoryText('a\u0000b\tc\n d'), 'a b c d');
+});
+
+test('memory: what the model is told', () => {
+  const items = [{ id: 'm1', text: 'Prefers metric units.' }, { id: 'm2', text: 'Easter egg: Ctrl+Shift+E.' }];
+  const on = buildMemoryPrompt({ items, enabled: true, canWrite: true });
+  assert.match(on, /^== MEMORY ==\n[^\n]*not instructions[^\n]*\n- \[m1\] Prefers metric units\.\n- \[m2\] Easter egg: Ctrl\+Shift\+E\.\nSaving: [^\n]*`remember`[^\n]*never save passwords/);
+  const readOnly = buildMemoryPrompt({ items, enabled: true, canWrite: false });
+  assert.match(readOnly, /You cannot save or change memories[^\n]*Settings > Memory/);
+  assert.doesNotMatch(readOnly, /`remember`/);
+  assert.match(buildMemoryPrompt({ items: [], enabled: true, canWrite: true }), /\(Nothing is saved yet\.\)/);
+  assert.equal(buildMemoryPrompt({ items, enabled: false, canWrite: true }), '', 'memory switched off: nothing is sent');
+  const system = buildSystemPrompt({ base: 'B', appText: 'A', pageText: 'P', memoryText: on, toolsText: '== TOOLS ==\nT', vision: true });
+  assert.ok(system.indexOf('Screenshots: an image') < system.indexOf('== MEMORY ==') && system.indexOf('== MEMORY ==') < system.indexOf('== TOOLS =='), 'order: screen rules, vision, memory, tools');
+  assert.doesNotMatch(buildSystemPrompt({ base: 'B' }), /MEMORY|Screenshots:/, 'nothing is added for apps without them');
+});
+
+test('settings: memory and vision switches have safe defaults', () => {
+  const d = sanitizeSettings({});
+  assert.deepEqual([d.memoryEnabled, d.memoryWrite, d.vision, d.screenshotAuto], [true, true, true, false], 'the agent only looks on its own when the user frees it');
+  assert.equal(sanitizeSettings({ screenshotAuto: 'yes', vision: 0 }).screenshotAuto, false);
+  assert.equal(sanitizeSettings({ vision: false }).vision, false);
+});
+
+/* ------------------------------------------------------------------ vision */
+
+const PNG = { mime: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' };
+const PNG_URL = `data:image/png;base64,${PNG.data}`;
+
+test('images: only valid ones travel, merged turns keep them, and their size is counted apart from the text', () => {
+  assert.deepEqual(cleanImages([PNG, { mime: 'image/svg+xml', data: PNG.data }, { mime: 'image/png', data: '<script>' }, { mime: 'image/png' }, null]), [PNG]);
+  assert.deepEqual(normalizeMessages([{ role: 'user', content: 'a', images: [PNG] }, { role: 'user', content: '', images: [PNG] }, { role: 'assistant', content: 'b', images: [PNG] }]), [
+    { role: 'user', content: 'a', images: [PNG, PNG] },
+    { role: 'assistant', content: 'b' },
+  ]);
+  assert.deepEqual(normalizeMessages([{ role: 'user', content: 'plain' }]), [{ role: 'user', content: 'plain' }], 'no images key without images');
+  assert.equal(imageChars([{ role: 'user', content: 'a', images: [PNG] }], [{ results: [{ images: [PNG, PNG] }] }]), PNG.data.length * 3);
+});
+
+test('images: a request larger than the text cap is fine when the extra is image data', async () => {
+  const big = { mime: 'image/jpeg', data: 'A'.repeat(1200 * 1024) };
+  let sentBytes = 0;
+  const fetch = async (url, init) => { sentBytes = init.body.length; return sseFetch(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', 'data: [DONE]\n\n'])(); };
+  await openai.openaiChat.stream({ cfg: { baseUrl: 'http://x', model: 'm' }, messages: [{ role: 'user', content: 'look', images: [big] }], onEvent: () => {}, fetch });
+  assert.ok(sentBytes > 1024 * 1024);
+  await assert.rejects(openai.openaiChat.stream({ cfg: { baseUrl: 'http://x', model: 'm' }, messages: [{ role: 'user', content: 'x'.repeat(1100 * 1024) }], onEvent: () => {}, fetch }), (e) => e.code === 'budget');
+});
+
+test('screenshots in a conversation: only the newest questions send their image; older ones say it is gone', () => {
+  const have = new Map([['s1', PNG], ['s2', PNG], ['s3', PNG]]);
+  const imageFor = (s) => have.get(s.id) || null;
+  const messages = [
+    { role: 'user', content: 'first', shots: [{ id: 's1' }] },
+    { role: 'assistant', content: 'a1', actions: [{ call: 'take_screenshot()', status: 'ok', summary: '1280 × 720 px', thumb: 'data:image/jpeg;base64,xxxx' }] },
+    { role: 'user', content: 'second', shots: [{ id: 's2' }, { id: 'gone' }] },
+    { role: 'assistant', content: 'a2' },
+    { role: 'user', content: 'third', shots: [{ id: 's3' }] },
+  ];
+  const out = buildRequestMessages({ messages, imageFor });
+  assert.deepEqual(out.map((m) => (m.images || []).length), [0, 0, 1, 0, 1], 'the two newest questions with screenshots');
+  assert.match(out[0].content, /^\[A screenshot was attached to this message; it is not included any more\.\]\n\nfirst$/);
+  assert.match(out[2].content, /^\[A screenshot of the user's screen, taken when this message was sent, is attached\.\]\n\nsecond$/);
+  assert.match(out[1].content, /^\[Actions taken: take_screenshot\(\) → done \(1280 × 720 px\)\]\n\na1$/);
+  assert.doesNotMatch(JSON.stringify(out), /xxxx/, 'thumbnails never go to the model');
+  const blind = buildRequestMessages({ messages, imageFor: null });
+  assert.ok(blind.every((m) => !m.images), 'a model that cannot see images gets none');
+  assert.match(blind[4].content, /not included any more/);
+  assert.deepEqual(buildRequestMessages({ messages: [{ role: 'user', content: 'q' }] }), [{ role: 'user', content: 'q' }], 'unchanged without screenshots');
+});
+
+test('images in each provider\'s format: on a question and as the result of a tool', () => {
+  const messages = [{ role: 'user', content: 'What is this?', images: [PNG] }];
+  const turns = [{ text: '', calls: [{ id: 'c1', name: 'take_screenshot', arguments: {} }], results: [{ id: 'c1', name: 'take_screenshot', content: 'Screenshot taken.', images: [PNG] }] }];
+
+  const o = openai.buildChat({ cfg: { baseUrl: 'http://x', model: 'm' }, messages, toolTurns: turns }).body.messages;
+  assert.deepEqual(o[0], { role: 'user', content: [{ type: 'text', text: 'What is this?' }, { type: 'image_url', image_url: { url: PNG_URL } }] });
+  assert.deepEqual(o.slice(-2), [
+    { role: 'tool', tool_call_id: 'c1', content: 'Screenshot taken.' },
+    { role: 'user', content: [{ type: 'text', text: '[The image returned by the tool call above]' }, { type: 'image_url', image_url: { url: PNG_URL } }] },
+  ], 'tool messages are text only: the image follows them');
+
+  const block = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG.data } };
+  const a = anthropic.buildChat({ cfg: { baseUrl: 'https://api.anthropic.com', model: 'm' }, messages, toolTurns: turns }).body.messages;
+  assert.deepEqual(a[0], { role: 'user', content: [block, { type: 'text', text: 'What is this?' }] });
+  assert.deepEqual(a.at(-1), { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: [{ type: 'text', text: 'Screenshot taken.' }, block] }] });
+
+  const inline = { inlineData: { mimeType: 'image/png', data: PNG.data } };
+  const g = gemini.buildChat({ cfg: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gm' }, messages, toolTurns: turns }).body.contents;
+  assert.deepEqual(g[0], { role: 'user', parts: [{ text: 'What is this?' }, inline] });
+  assert.deepEqual(g.at(-1), { role: 'user', parts: [{ functionResponse: { name: 'take_screenshot', response: { result: 'Screenshot taken.' } } }, inline] });
+
+  assert.deepEqual(textTurnMessages(turns).at(-1), { role: 'user', content: '<tool_results>\ntake_screenshot: Screenshot taken.\n</tool_results>', images: [PNG] }, 'text mode: the image rides on the results message');
+});
+
+test('relay adapter: images go out only to a relay that says it passes them', async () => {
+  const messages = [{ role: 'user', content: 'look', images: [PNG] }];
+  const relayFetch = (info, log) => async (url, init = {}) => {
+    log.push(init.method || 'GET');
+    if ((init.method || 'GET') === 'GET') return new Response(JSON.stringify(info), { status: 200, headers: { 'content-type': 'application/json' } });
+    log.push(JSON.parse(init.body));
+    return sseFetch([': open\n\n', 'event: delta\ndata: {"text":"I see it."}\n\n', 'event: done\ndata: {}\n\n'])();
+  };
+  const ask = (relayUrl, fetch, msgs = messages) => streamChat({ settings: sanitizeSettings({ transport: 'relay', relayUrl }), keyFor: () => '', system: '', messages: msgs, fetch, onEvent: () => {} });
+
+  const okLog = [];
+  const ok = relayFetch({ ok: true, relay: 'ai-agent-drawer', version: '1.3.0', available: true, mode: 'local', images: 2 }, okLog);
+  await ask('http://x/relay-images', ok);
+  await ask('http://x/relay-images', ok);
+  assert.deepEqual(okLog.filter((x) => typeof x === 'string'), ['GET', 'POST', 'POST'], 'the relay is asked once');
+  assert.deepEqual(okLog[2].messages, [{ role: 'user', content: 'look', images: [PNG] }]);
+  await assert.rejects(ask('http://x/relay-images', ok, [{ role: 'user', content: 'look', images: [PNG, PNG, PNG] }]), /at most 2 images per request/);
+
+  const oldLog = [];
+  const old = relayFetch({ ok: true, relay: 'ai-agent-drawer', version: '1.2.0', available: true, mode: 'local' }, oldLog);
+  await assert.rejects(ask('http://x/relay-old', old), (e) => e.code === 'refused' && /older than version 1\.3/.test(e.message));
+  assert.deepEqual(oldLog, ['GET'], 'nothing is posted to a relay that would drop the image silently');
+  await ask('http://x/relay-old', old, [{ role: 'user', content: 'no image' }]);
+  assert.equal(oldLog.filter((x) => x === 'GET').length, 1, 'requests without images never ask');
+});
+
+test('relay probe: a relay without image support switches vision off; a preset can say whether its model sees', async () => {
+  const jsonFetch = (body) => async () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+  const base = { ok: true, relay: 'ai-agent-drawer', available: true, mode: 'public', providers: ['openai'], serverKeys: { openai: true } };
+  const v13 = await probeRelay('r13', { fetch: jsonFetch({ ...base, version: '1.3.0', images: 4, preset: { provider: 'openai', model: 'm1', models: ['m1'], vision: false } }) });
+  assert.deepEqual([v13.images, v13.preset.vision], [4, false]);
+  assert.equal(relayDefaults(v13).vision, false, 'the preset says its model is text-only');
+  assert.equal(relayDefaults({ ...v13, preset: { ...v13.preset, vision: true } }).vision, true);
+  const v12 = await probeRelay('r12', { fetch: jsonFetch({ ...base, version: '1.2.0', preset: { provider: 'openai', model: 'm1', models: ['m1'] } }) });
+  assert.equal(v12.images, 0);
+  assert.equal(relayDefaults(v12).vision, false);
+  const saved = sanitizeSettings({ transport: 'relay', relayUrl: 'r12', vision: true, provider: 'openai' });
+  assert.equal(adjustForRelay(saved, { ...v12, url: 'r12' }).vision, false, 'even when the user had it on');
+  assert.equal(adjustForRelay({ ...saved, relayUrl: 'r13' }, { ...v13, url: 'r13' }).vision, true);
+});
+
+test('built-in tools (memory, screenshots) follow their own switches, not the app tools\' master switch', () => {
+  const appTool = normalizeTool({ name: 'filter', description: 'Filter.', effect: 'read', enabled: true, run: () => 1 });
+  const shot = { ...normalizeTool({ name: 'take_screenshot', description: 'Look at the screen.', effect: 'read', run: () => 1 }), builtin: 'vision', enabledIn: (s) => !!s.screenshotAuto };
+  const forget = { ...normalizeTool({ name: 'forget', description: 'Delete a memory.', effect: 'write', run: () => 1 }), builtin: 'memory', enabledIn: (s) => !!s.memoryWrite };
+  assert.equal(toolEnabled(shot, { screenshotAuto: false, toolStates: { take_screenshot: true } }), false, 'not a Settings > Tools checkbox');
+  assert.equal(toolEnabled(shot, { screenshotAuto: true }), true);
+  assert.equal(toolSpecs([forget])[0].description, 'Delete a memory.', 'no "changes the application" note on built-in tools');
+  assert.match(toolSpecs([{ ...forget, builtin: undefined }])[0].description, /changes the application/);
+  const prompt = buildToolPrompt({ classes: { callable: [forget], off: [shot], elsewhere: [] }, mode: 'text', appOff: true });
+  assert.match(prompt, /The application has tools of its own, but the user switched them off/);
+  assert.match(prompt, /- forget\(\) — Delete a memory\.\n/);
+  assert.match(prompt, /Turned off by the user[\s\S]*- take_screenshot — Look at the screen\./);
+  assert.doesNotMatch(buildToolPrompt({ classes: classifyTools([appTool], sanitizeSettings({}), 'p'), mode: 'native' }), /switched them off/);
 });

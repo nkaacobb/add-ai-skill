@@ -7,8 +7,9 @@ node <skill>/scripts/verify.mjs http://127.0.0.1:8080/ --change "<js that change
 ```
 
 Drives headless Edge/Chrome (Node 22+, nothing to install): console errors on load, the hotkey and the flag, the
-toggle, typing a space in the composer, Settings > Context size, the pushed layout at 1280/1366/1600 px (with
-screenshots in `.verify/`), and — with a model running — "Read the page" → synced → change → dirty → re-read →
+toggle, typing a space in the composer, Settings > Context size, the tool catalog, the starting memories, one
+screenshot taken the way the camera button takes it, the pushed layout at 1280/1366/1600 px (with screenshots in
+`.verify/`), and — with a model running — "Read the page" → synced → change → dirty → re-read →
 "Page unchanged". `--no-llm` skips the questions; `--toggle`, `--agent`, `--widths`, `--question` adjust it; `--help`
 lists everything. Exit code 1 when a check fails. It does not replace looking at the page yourself.
 
@@ -50,6 +51,15 @@ lists everything. Exit code 1 when a check fails. It does not replace looking at
       they work; `ai-tools.json` turns on only what the user chose. With a model: an action shows a chip, write tools
       ask first, the app changes, the answer confirms; "which tools can you use?" lists on and off; a turned-off tool
       produces the *Turn on* card. The tools module has unit tests.
+- [ ] **Memory**: `ai-memory.json` holds the agreed seed notes (facts the screen does not show; one sentence each; no
+      secrets) and loads (`verify.mjs` → memory). "Remember that …" shows a *Remember* chip with Undo; a new chat
+      knows it; Settings > Memory lists, edits and exports. If `memorySave` is used: per signed-in user, behind auth.
+- [ ] **Vision**: the capture method was chosen on purpose (screen capture, or a `screenshot` hook for a canvas view —
+      WebGL hooks render a frame first); `defaults.vision` matches the default model; the camera button attaches a
+      thumbnail and the model describes the picture; asked to look, the agent shows the *Allow once* card while
+      `screenshotAuto` is off. Secure context; no `Permissions-Policy` against `display-capture`; CSP allows
+      `img-src data:`. Apps whose screen shows data that must not leave: a hook that draws only what may, or
+      `screenshots: false`.
 - [ ] Code/reply actions (if any) do what they say, show up even when a small model uses a generic fence tag
       (`json`), clamp values, apply through the app's real controls, and never bypass the app's confirmations.
 - [ ] Light and dark mode both look right; theme overrides on `.aia-scope` apply in both; the toggle's context dot
@@ -85,6 +95,14 @@ A quick console check: `agent.getContextStatus()`, `await agent.systemPrompt()`,
 | The answer after a tool round is empty, or only in the Thinking panel | Some local models answer the step after tools only in their reasoning channel; 1.2 shows that reasoning as the answer. Otherwise raise *Max reply tokens*. |
 | "Stopped after N tool steps" | The model kept calling tools: raise Settings > Tools > Max tool steps, or give tools clearer results (counts, "done", errors). |
 | A tool is called with wrong values | Tighten its schema (`enum`, `min`/`max`, `required`) and description; arguments are clamped, and errors go back to the model. |
+| "Remember that…" gets a plain answer, nothing is saved | The model did not call `remember`: its server has no tool calling (Settings > Tools > "Text blocks"), or Settings > Memory > "Let the agent save a memory" is off. The user can always add it in Settings > Memory. |
+| A memory is ignored or contradicted | Memories are notes, and the screen wins when they conflict. Make the note specific (what, when it applies). Very long memory lists dilute: keep them short. |
+| No camera button | Settings > Vision > "This model can see images" is off (or `defaults.vision: false`, or the relay has no image support: update it to 1.3), `screenshots: false`, or the browser cannot capture the page (phones, plain http beyond localhost) and the app has no `screenshot` hook. |
+| The screenshot fails: "Screen sharing was not allowed" | The user cancelled the browser's prompt, or a `Permissions-Policy` forbids `display-capture` (in an iframe: `allow="display-capture"`). |
+| The model ignores the screenshot, or the request fails once one is attached | A text-only model. Pick a vision model, or switch "This model can see images" off. With LM Studio, Settings > Vision says what the server reports for the loaded model. |
+| The screenshot of a WebGL view is blank (white) | The drawing buffer was already cleared: in the `screenshot` hook render a frame and return the canvas synchronously (or create the context with `preserveDrawingBuffer: true`). |
+| "The screenshot could not be read … tainted canvas" | The canvas drew images from another origin without CORS. Load them with `crossOrigin = 'anonymous'` (and CORS headers), or use the browser's screen capture (return `null` from the hook). |
+| Relay: "cannot pass images" / "too large for this server" with a screenshot | A relay older than 1.3, `maxImages: 0`, or a body limit in front of it: `client_max_body_size` (Nginx), `post_max_size` (PHP), `LimitRequestBody` (Apache). |
 | Model says it cannot see the page | Settings > Agent > "Share what is on screen" is off, or the page has no `content` hook (flag shows *none*). Check Settings > Context. |
 | Answers about the wrong page | `setPage` not called on navigation, or called with the previous page's hooks. |
 | Open-time setup does not run after a reload | `resume` reopened the drawer during `createAiAgent()`. Register `on('open')` in the same tick (it is replayed with `{ resumed: true }`), or check `agent.isOpen()` after creating the agent. |
@@ -107,13 +125,19 @@ From the skill folder: `node --test` (or `npm test`). No model needed.
 
 - `tests/runtime.test.mjs` — hashing, the sync planner, request building, prompt assembly, SSE parsing, transport
   errors, adapters, settings/keys storage (incl. late defaults), fallback, Markdown safety, the max-wait debounce,
-  key classification, `parseBlockValues`, the relay probe.
+  key classification, `parseBlockValues`, the relay probe, tools, the memory store and its prompt section, images in
+  each provider's format and in the conversation.
 - `tests/relay.test.mjs` — both relays against a fake upstream: GET contract, local-only mode, public mode (preset
-  lock, visitor keys never forwarded, same-origin, rate limits, caps, generic errors), `: open` + keepalive comments.
+  lock, visitor keys never forwarded, same-origin, rate limits, caps, generic errors), `: open` + keepalive comments,
+  tools and images passed through within their limits.
   PHP runs when `php` (with curl) is on the PATH or `PHP_BIN` points at it; otherwise those tests are skipped.
 - `tests/browser.test.mjs` — headless Edge/Chrome (`AIA_BROWSER` to choose, `AIA_SKIP_BROWSER=1` to skip): key
   isolation, dialog docking, the layout warning, theme overrides, resume, `setControlValue`, the probe on a static
-  server, the context-size warning.
-- `tests/example.test.mjs` — the Hello World content builders and tools (the tests every integration should have).
+  server, the context-size warning, the tool loop, memory end to end (remember, forget, Undo, Settings > Memory),
+  and screenshots (a WebGL `screenshot` hook, the agent asking to look, and the browser's real screen capture with the
+  drawer cropped off).
+- `tests/example.test.mjs` — the Hello World content builders, tools and memory file (the tests every integration
+  should have).
 - `tests/detect.test.mjs` — `scripts/detect.mjs` on fixture apps (fresh, current, older/edited runtime, 1.0 relay
-  edits without printing keys, workaround hints, the record) and that the release fingerprints are up to date.
+  edits without printing keys, workaround hints, which features are there and used, the record) and that the release
+  fingerprints are up to date.

@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * ai-agent-drawer — PHP relay 1.1 (PHP 8.1+ with the curl extension)
+ * ai-agent-drawer — PHP relay 1.3 (PHP 8.1+ with the curl extension)
  * -------------------------------------------------------------------
  * Copy this file into the application unchanged (e.g. api/relay.php) and point the agent at it:
  *   createAiAgent({ relayProbe: true, defaults: { relayUrl: 'api/relay.php' } })
@@ -10,14 +10,17 @@ declare(strict_types=1);
  *
  * The browser sends the conversation here; this file calls the provider with cURL and streams the reply back as
  * Server-Sent Events, in the contract of assets/ai-agent/adapters/relay.js:
- *   POST {action:'chat', provider, baseUrl, model, apiKey, system, messages:[{role,content}], maxTokens, temperature,
+ *   POST {action:'chat', provider, baseUrl, model, apiKey, system, messages:[{role,content,images?}], maxTokens, temperature,
  *         reasoning, tools?, toolTurns?, turnId?}
  *         -> text/event-stream: delta {text} | reasoning {text} | tool_call {id, name, arguments} | error {message, code}
  *            | done {…}
  *   Tools (neutral formats, see assets/ai-agent/core/tools.js) are translated for the provider; they run in the
  *   browser. A public relay counts one question per chain of tool steps (same turnId), up to limits.maxToolSteps.
+ *   Images (1.3): user messages and tool results may carry images:[{mime, data}] (screenshots; base64 PNG, JPEG, WebP
+ *   or GIF). They are checked (limits.maxImages per request, limits.maxImageBytes each; maxImages 0 refuses them) and
+ *   translated for the provider. The GET reply says how many one request may carry (`images`).
  *   POST {action:'models', provider, baseUrl, apiKey} -> {ok, models:[{id,label,loaded}]} | {ok:false, error, code}
- *   GET  -> {ok, relay, version, available, mode, providers, serverKeys, preset, reason?}   (always 200)
+ *   GET  -> {ok, relay, version, available, mode, providers, serverKeys, preset, images, reason?}   (always 200)
  *
  * CONFIGURATION lives in a PHP file that returns an array (see relay.config.example.php). It is looked up in:
  *   1. the path in the AIA_RELAY_CONFIG environment/server variable;
@@ -37,7 +40,8 @@ declare(strict_types=1);
  * PHP error log).
  */
 
-const AIA_RELAY_VERSION = '1.2.0';
+const AIA_RELAY_VERSION = '1.3.0';
+const AIA_IMAGE_MIME = '/^image\/(png|jpeg|webp|gif)$/';
 const AIA_TOOL_NAME = '/^[A-Za-z][A-Za-z0-9_-]{0,63}$/';
 
 /** Provider catalog — keep in step with assets/ai-agent/core/providers.js. */
@@ -76,6 +80,16 @@ final class AiaRelayError extends RuntimeException
 }
 
 /* ------------------------------------------------------------------------------------------------ config */
+
+/** A php.ini size ("8M", "512K", "1G", "0") in bytes; 0 = no limit or unknown. */
+function aia_ini_bytes(string $value): int
+{
+    $v = trim($value);
+    if ($v === '' || !preg_match('/^(\d+)\s*([kmg]?)/i', $v, $m)) {
+        return 0;
+    }
+    return (int) $m[1] * (['' => 1, 'k' => 1024, 'm' => 1048576, 'g' => 1073741824][strtolower($m[2])]);
+}
 
 /** An environment/server variable: process environment, Apache SetEnv, or Nginx fastcgi_param. */
 function aia_env(string $name): string
@@ -129,6 +143,8 @@ function aia_config_defaults(string $mode): array
             'maxOutputTokens' => $public ? 4096 : 64000,
             'maxTools'        => 64,                     // tool definitions per request
             'maxToolSteps'    => $public ? 10 : 30,      // tool rounds per question
+            'maxImages'       => $public ? 4 : 16,       // screenshots per request (0 = refuse images)
+            'maxImageBytes'   => $public ? 1536 * 1024 : 4 * 1024 * 1024,   // one image, as base64 text
         ],
     ];
 }
@@ -196,7 +212,7 @@ function aia_config(): array
     return $cfg;
 }
 
-/** @return array{provider: string, models: list<string>, model: string, baseUrl: string}|null */
+/** @return array{provider: string, models: list<string>, model: string, baseUrl: string, vision?: bool}|null */
 function aia_normalize_preset(mixed $p): ?array
 {
     if (!is_array($p) || !isset(AIA_PROVIDERS[(string) ($p['provider'] ?? '')])) {
@@ -207,7 +223,21 @@ function aia_normalize_preset(mixed $p): ?array
     if ($model !== '' && !in_array($model, $models, true)) {
         array_unshift($models, $model);
     }
-    return ['provider' => (string) $p['provider'], 'models' => $models, 'model' => $model, 'baseUrl' => trim((string) ($p['baseUrl'] ?? ''))];
+    $out = ['provider' => (string) $p['provider'], 'models' => $models, 'model' => $model, 'baseUrl' => trim((string) ($p['baseUrl'] ?? ''))];
+    if (is_bool($p['vision'] ?? null)) {
+        $out['vision'] = $p['vision'];          // whether the preset's model sees images (the drawer's default)
+    }
+    return $out;
+}
+
+/** The preset as the GET reply shows it. */
+function aia_preset_info(array $p): array
+{
+    $out = ['provider' => $p['provider'], 'model' => $p['model'], 'models' => $p['models']];
+    if (isset($p['vision'])) {
+        $out['vision'] = $p['vision'];
+    }
+    return $out;
 }
 
 /** Public mode cannot run without a preset and its key: say exactly what is missing (to local requests). */
@@ -569,21 +599,66 @@ function aia_curl_tls($ch, array $cfg): void
     }
 }
 
-/** Keep only user/assistant turns, merge repeats, start with the user. */
-function aia_messages(array $raw): array
+/**
+ * The images of one message or tool result ([{ mime, data: base64 }]), checked against the limits.
+ * `$tally` counts them across the whole request: ['count' => int, 'chars' => int].
+ * @return list<array{mime: string, data: string}>
+ */
+function aia_images(mixed $list, array $cfg, array &$tally): array
 {
+    if (!is_array($list) || $list === []) {
+        return [];
+    }
+    $max = $cfg['limits']['maxImages'];
+    if ($max <= 0) {
+        throw new AiaRelayError(400, 'refused', 'This assistant does not accept images. Turn off "This model can see images" in Settings > Vision.');
+    }
+    $out = [];
+    foreach ($list as $i) {
+        $mime = is_array($i) ? (string) ($i['mime'] ?? '') : '';
+        $data = is_array($i) && is_string($i['data'] ?? null) ? $i['data'] : '';
+        if (!preg_match(AIA_IMAGE_MIME, $mime) || strlen($data) < 16 || !preg_match('/^[A-Za-z0-9+\/]+={0,2}$/D', $data)) {
+            throw new AiaRelayError(400, 'malformed', 'An attached image is not a valid PNG, JPEG, WebP or GIF.');
+        }
+        if ($cfg['limits']['maxImageBytes'] > 0 && strlen($data) > $cfg['limits']['maxImageBytes']) {
+            throw new AiaRelayError(413, 'budget', 'A screenshot is too large for the assistant.');
+        }
+        $tally['count']++;
+        $tally['chars'] += strlen($data);
+        if ($tally['count'] > $max) {
+            throw new AiaRelayError(413, 'budget', 'Too many screenshots in one request (limit ' . $max . '). Remove one, or start a new chat.');
+        }
+        $out[] = ['mime' => $mime, 'data' => $data];
+    }
+    return $out;
+}
+
+/** Keep only user/assistant turns, merge repeats, start with the user. User turns may carry `images`. */
+function aia_messages(array $raw, array $cfg = [], ?array &$tally = null): array
+{
+    $count = ['count' => 0, 'chars' => 0];
+    if ($tally === null) {
+        $tally = &$count;
+    }
     $out = [];
     foreach ($raw as $m) {
         $role = is_array($m) ? (string) ($m['role'] ?? '') : '';
         $content = is_array($m) ? trim((string) ($m['content'] ?? '')) : '';
-        if (!in_array($role, ['user', 'assistant'], true) || $content === '') {
+        if (!in_array($role, ['user', 'assistant'], true)) {
+            continue;
+        }
+        $images = $role === 'user' && $cfg !== [] ? aia_images($m['images'] ?? null, $cfg, $tally) : [];
+        if ($content === '' && $images === []) {
             continue;
         }
         $last = count($out) - 1;
         if ($last >= 0 && $out[$last]['role'] === $role) {
-            $out[$last]['content'] .= "\n\n" . $content;
+            $out[$last]['content'] = $out[$last]['content'] === '' ? $content : ($content === '' ? $out[$last]['content'] : $out[$last]['content'] . "\n\n" . $content);
+            if ($images !== []) {
+                $out[$last]['images'] = array_merge($out[$last]['images'] ?? [], $images);
+            }
         } else {
-            $out[] = ['role' => $role, 'content' => $content];
+            $out[] = $images !== [] ? ['role' => $role, 'content' => $content, 'images' => $images] : ['role' => $role, 'content' => $content];
         }
     }
     if ($out !== [] && $out[0]['role'] === 'assistant') {
@@ -602,8 +677,12 @@ function aia_obj(mixed $v): mixed
  * Tools and this question's tool exchange from the request, checked and trimmed to the neutral formats.
  * @return array{0: list<array<string, mixed>>, 1: list<array<string, mixed>>}
  */
-function aia_tools(array $req, array $cfg): array
+function aia_tools(array $req, array $cfg, ?array &$tally = null): array
 {
+    $count = ['count' => 0, 'chars' => 0];
+    if ($tally === null) {
+        $tally = &$count;
+    }
     $tools = is_array($req['tools'] ?? null) ? $req['tools'] : [];
     $turns = is_array($req['toolTurns'] ?? null) ? $req['toolTurns'] : [];
     if (count($tools) > $cfg['limits']['maxTools']) {
@@ -641,7 +720,7 @@ function aia_tools(array $req, array $cfg): array
         $results = [];
         foreach ((is_array($t['results'] ?? null) ? $t['results'] : []) as $r) {
             if (is_array($r)) {
-                $results[] = ['id' => substr((string) ($r['id'] ?? ''), 0, 128), 'name' => (string) ($r['name'] ?? ''), 'content' => substr((string) ($r['content'] ?? ''), 0, 100000)];
+                $results[] = ['id' => substr((string) ($r['id'] ?? ''), 0, 128), 'name' => (string) ($r['name'] ?? ''), 'content' => substr((string) ($r['content'] ?? ''), 0, 100000), 'images' => aia_images($r['images'] ?? null, $cfg, $tally)];
             }
         }
         $cleanTurns[] = ['text' => (string) ($t['text'] ?? ''), 'calls' => $calls, 'results' => $results];
@@ -662,7 +741,13 @@ function aia_chat_request(array $t, array $req, array $cfg, array $tools = [], a
     $system = (string) ($req['system'] ?? '');
     $raw = is_array($req['messages'] ?? null) ? $req['messages'] : [];
     aia_check_messages($raw, $cfg);
-    $messages = aia_messages($raw);
+    $tally = ['count' => 0, 'chars' => 0];
+    foreach ($turns as $turn) {
+        foreach ($turn['results'] as $r) {
+            $tally['count'] += count($r['images'] ?? []);        // already checked by aia_tools(); counted again here
+        }
+    }
+    $messages = aia_messages($raw, $cfg, $tally);
     $cap = $cfg['limits']['maxOutputTokens'] > 0 ? $cfg['limits']['maxOutputTokens'] : 64000;
     $maxTokens = max(64, min($cap, (int) ($req['maxTokens'] ?? 2048)));
     $temperature = is_numeric($req['temperature'] ?? null) ? max(0.0, min(2.0, (float) $req['temperature'])) : 0.4;
@@ -672,13 +757,25 @@ function aia_chat_request(array $t, array $req, array $cfg, array $tools = [], a
         if ($t['model'] === '') {
             throw new AiaRelayError(400, 'missing-model', 'Choose an Anthropic model in Settings.');
         }
+        $image = static fn (array $i): array => ['type' => 'image', 'source' => ['type' => 'base64', 'media_type' => $i['mime'], 'data' => $i['data']]];
+        foreach ($messages as $k => $m) {
+            if (isset($m['images'])) {
+                $messages[$k] = ['role' => $m['role'], 'content' => array_merge(array_map($image, $m['images']), [['type' => 'text', 'text' => $m['content'] !== '' ? $m['content'] : '(image)']])];
+            }
+        }
         foreach ($turns as $turn) {
             $content = $turn['text'] !== '' ? [['type' => 'text', 'text' => $turn['text']]] : [];
             foreach ($turn['calls'] as $c) {
                 $content[] = ['type' => 'tool_use', 'id' => $c['id'], 'name' => $c['name'], 'input' => aia_obj($c['arguments'])];
             }
             $messages[] = ['role' => 'assistant', 'content' => $content];
-            $messages[] = ['role' => 'user', 'content' => array_map(static fn (array $r): array => ['type' => 'tool_result', 'tool_use_id' => $r['id'], 'content' => $r['content']], $turn['results'])];
+            $messages[] = ['role' => 'user', 'content' => array_map(static fn (array $r): array => [
+                'type' => 'tool_result',
+                'tool_use_id' => $r['id'],
+                'content' => ($r['images'] ?? []) !== []
+                    ? array_merge([['type' => 'text', 'text' => $r['content'] !== '' ? $r['content'] : 'Done.']], array_map($image, $r['images']))
+                    : $r['content'],
+            ], $turn['results'])];
         }
         $body = ['model' => $t['model'], 'max_tokens' => $maxTokens, 'messages' => $messages, 'stream' => true];
         if ($tools !== []) {
@@ -697,7 +794,11 @@ function aia_chat_request(array $t, array $req, array $cfg, array $tools = [], a
         if ($t['model'] === '') {
             throw new AiaRelayError(400, 'missing-model', 'Choose a Gemini model in Settings.');
         }
-        $contents = array_map(static fn (array $m): array => ['role' => $m['role'] === 'assistant' ? 'model' : 'user', 'parts' => [['text' => $m['content']]]], $messages);
+        $inline = static fn (array $i): array => ['inlineData' => ['mimeType' => $i['mime'], 'data' => $i['data']]];
+        $contents = array_map(static fn (array $m): array => [
+            'role' => $m['role'] === 'assistant' ? 'model' : 'user',
+            'parts' => array_merge([['text' => $m['content'] !== '' ? $m['content'] : '(image)']], array_map($inline, $m['images'] ?? [])),
+        ], $messages);
         foreach ($turns as $turn) {
             $parts = $turn['text'] !== '' ? [['text' => $turn['text']]] : [];
             foreach ($turn['calls'] as $c) {
@@ -708,7 +809,13 @@ function aia_chat_request(array $t, array $req, array $cfg, array $tools = [], a
                 $parts[] = $part;
             }
             $contents[] = ['role' => 'model', 'parts' => $parts];
-            $contents[] = ['role' => 'user', 'parts' => array_map(static fn (array $r): array => ['functionResponse' => ['name' => $r['name'], 'response' => ['result' => $r['content']]]], $turn['results'])];
+            $responses = array_map(static fn (array $r): array => ['functionResponse' => ['name' => $r['name'], 'response' => ['result' => $r['content']]]], $turn['results']);
+            foreach ($turn['results'] as $r) {
+                foreach ($r['images'] ?? [] as $i) {
+                    $responses[] = $inline($i);
+                }
+            }
+            $contents[] = ['role' => 'user', 'parts' => $responses];
         }
         $body = [
             'contents' => $contents,
@@ -724,6 +831,15 @@ function aia_chat_request(array $t, array $req, array $cfg, array $tools = [], a
         return [aia_join($t['baseUrl'], $path), $body];
     }
 
+    $parts = static fn (string $text, array $images): array => array_merge(
+        [['type' => 'text', 'text' => $text !== '' ? $text : '(image)']],
+        array_map(static fn (array $i): array => ['type' => 'image_url', 'image_url' => ['url' => 'data:' . $i['mime'] . ';base64,' . $i['data']]], $images),
+    );
+    foreach ($messages as $k => $m) {
+        if (isset($m['images'])) {
+            $messages[$k] = ['role' => $m['role'], 'content' => $parts($m['content'], $m['images'])];
+        }
+    }
     foreach ($turns as $turn) {
         $messages[] = ['role' => 'assistant', 'content' => $turn['text'], 'tool_calls' => array_map(
             static fn (array $c): array => ['id' => $c['id'], 'type' => 'function', 'function' => ['name' => $c['name'], 'arguments' => (string) json_encode(aia_obj($c['arguments']), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]],
@@ -731,6 +847,11 @@ function aia_chat_request(array $t, array $req, array $cfg, array $tools = [], a
         )];
         foreach ($turn['results'] as $r) {
             $messages[] = ['role' => 'tool', 'tool_call_id' => $r['id'], 'content' => $r['content']];
+        }
+        foreach ($turn['results'] as $r) {             // tool messages are text only: the image follows them
+            if (($r['images'] ?? []) !== []) {
+                $messages[] = ['role' => 'user', 'content' => $parts('[The image returned by the tool call above]', $r['images'])];
+            }
         }
     }
     $body = ['messages' => array_merge($system !== '' ? [['role' => 'system', 'content' => $system]] : [], $messages), 'stream' => true];
@@ -868,7 +989,7 @@ function aia_code_for(int $status, string $detail): string
 function aia_unavailable(string $mode, string $reason, string $detail = ''): never
 {
     $body = ['ok' => true, 'relay' => 'ai-agent-drawer', 'version' => AIA_RELAY_VERSION, 'mode' => $mode, 'available' => false,
-        'providers' => [], 'serverKeys' => [], 'preset' => null, 'reason' => $reason];
+        'providers' => [], 'serverKeys' => [], 'preset' => null, 'images' => 0, 'reason' => $reason];
     if ($detail !== '' && aia_is_local_request()) {
         $body['detail'] = $detail;
     }
@@ -900,7 +1021,8 @@ function aia_info(array $cfg): never
             'available' => true,
             'providers' => [$p['provider']],
             'serverKeys' => [$p['provider'] => true],
-            'preset' => ['provider' => $p['provider'], 'model' => $p['model'], 'models' => $p['models']],
+            'preset' => aia_preset_info($p),
+            'images' => $cfg['limits']['maxImages'],
             'limits' => ['perMinute' => $cfg['limits']['perMinute'], 'perDay' => $cfg['limits']['perDay']],
         ]);
     }
@@ -910,8 +1032,8 @@ function aia_info(array $cfg): never
             $keys[$id] = aia_server_key($id, $cfg) !== '';
         }
     }
-    $preset = $cfg['preset'] !== null ? ['provider' => $cfg['preset']['provider'], 'model' => $cfg['preset']['model'], 'models' => $cfg['preset']['models']] : null;
-    aia_json(200, $base + ['available' => true, 'providers' => array_keys(AIA_PROVIDERS), 'serverKeys' => $keys, 'preset' => $preset]);
+    $preset = $cfg['preset'] !== null ? aia_preset_info($cfg['preset']) : null;
+    aia_json(200, $base + ['available' => true, 'providers' => array_keys(AIA_PROVIDERS), 'serverKeys' => $keys, 'preset' => $preset, 'images' => $cfg['limits']['maxImages']]);
 }
 
 function aia_models(array $t, array $cfg): never
@@ -1144,10 +1266,17 @@ function aia_main(): void
         }
         aia_authorize($cfg);
 
-        $max = $cfg['limits']['maxBodyBytes'];
+        // Screenshots come on top of the text cap (they have their own: maxImages x maxImageBytes).
+        $textMax = $cfg['limits']['maxBodyBytes'];
+        $max = $textMax > 0 ? $textMax + $cfg['limits']['maxImages'] * $cfg['limits']['maxImageBytes'] : 0;
         $length = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
         if ($max > 0 && $length > $max) {
             throw new AiaRelayError(413, 'budget', 'The request is too large for the assistant. Lower "Max screen content" or "Conversation memory" in Settings > Agent.');
+        }
+        // PHP itself drops a body larger than post_max_size (php://input is then empty): say so instead of "not JSON".
+        $phpMax = aia_ini_bytes((string) ini_get('post_max_size'));
+        if ($phpMax > 0 && $length > $phpMax) {
+            throw new AiaRelayError(413, 'budget', 'The request is too large for this server. Remove a screenshot, or lower "Max screen content" in Settings > Agent.', 'PHP post_max_size (' . ini_get('post_max_size') . ') is smaller than this request (' . $length . ' bytes): raise post_max_size in php.ini.');
         }
         $raw = file_get_contents('php://input', false, null, 0, $max > 0 ? $max + 1 : null);
         if (!is_string($raw) || ($max > 0 && strlen($raw) > $max)) {
@@ -1164,7 +1293,12 @@ function aia_main(): void
             aia_models($target, $cfg);
         }
         aia_check_messages(is_array($req['messages'] ?? null) ? $req['messages'] : [], $cfg);   // before counting
-        [$tools, $turns] = aia_tools($req, $cfg);
+        $tally = ['count' => 0, 'chars' => 0];
+        [$tools, $turns] = aia_tools($req, $cfg, $tally);
+        aia_messages(is_array($req['messages'] ?? null) ? $req['messages'] : [], $cfg, $tally);    // checks the images
+        if ($textMax > 0 && strlen($raw) - $tally['chars'] > $textMax) {
+            throw new AiaRelayError(413, 'budget', 'The request is too large for the assistant. Lower "Max screen content" or "Conversation memory" in Settings > Agent.');
+        }
         if ($cfg['mode'] === 'public') {
             aia_rate_limit($cfg, substr((string) ($req['turnId'] ?? ''), 0, 64), $turns !== []);
         }

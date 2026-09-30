@@ -8,6 +8,9 @@ the app's function, sending the result (and the updated screen) back, and showin
 Tools run **in the browser**, with the user's own session and permissions: they can do what the app's front end can
 already do, nothing more. Relays only pass definitions and calls through.
 
+The runtime also has three built-in tools that are not part of the app's catalog — `remember`, `forget` and
+`take_screenshot`. They follow their own settings (Settings > Memory and > Vision): see `memory-and-vision.md`.
+
 ## 1. Discover what the application can do (the tool plan)
 
 During the survey (SKILL.md step 1), list the app's **action surface**, per page/view, from the code:

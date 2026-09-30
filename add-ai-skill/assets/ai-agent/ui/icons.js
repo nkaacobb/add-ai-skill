@@ -16,4 +16,5 @@ export const ICONS = {
   trash: svg('<path d="M5 7h14M10 7V5h4v2M8 7l1 12h6l1-12"/>', 1.9),
   doc: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>'),
   check: svg('<path d="m5 12.5 4.5 4.5L19 7.5"/>', 2),
+  camera: svg('<path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2l1.4-2h6.2l1.4 2h2A1.5 1.5 0 0 1 20 8.5v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5v-9Z"/><circle cx="12" cy="13" r="3.4"/>'),
 };

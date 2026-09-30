@@ -32,11 +32,13 @@ host app ──hooks──▶ ContextManager ──snapshot/hash──▶ conver
 | `core/relay-probe.js` | `probeRelay` (the relay's GET), `relayDefaults`, `adjustForRelay` (keeps saved settings usable). | no |
 | `core/blocks.js` | `parseBlockValues`: values from a fenced block, checked against an allowlisted schema, clamped. | no |
 | `core/tools.js` | Tools: definitions, JSON Schema, argument validation, on/off and availability, the TOOLS prompt section, text-mode blocks, `ai-tools.json` in/out. | no |
+| `core/memory.js` | Memory: the notes kept between conversations — the app's file as the base, this browser's changes on top, the MEMORY prompt section, `ai-memory.json` in/out. | storage |
 | `core/transport.js` | `requestJson`, `requestStream` (idle timeout, abort), SSE parser, error codes + guidance, redaction. | no |
-| `core/messages.js`, `core/reasoning.js` | Transcript normalisation; `<think>` splitting. | no |
+| `core/messages.js`, `core/reasoning.js` | Transcript normalisation and the neutral image format (`images: [{ mime, data }]`); `<think>` splitting. | no |
 | `adapters/*.js` | One per wire protocol: build request, parse stream chunks / whole replies, list models. | no |
-| `ui/drawer.js` | The drawer: toggles, open/close/push, streaming render, receipts, flag, saved chats, resume, actions, errors. | yes |
-| `ui/settings-panel.js` | The modal: Model / Agent / Context tabs, draft + save, load models, test connection. | yes |
+| `ui/drawer.js` | The drawer: toggles, open/close/push, streaming render, receipts, flag, saved chats, resume, actions, errors, the tool loop, the built-in tools (`remember`, `forget`, `take_screenshot`), the camera button and thumbnails. | yes |
+| `ui/capture.js` | Screenshots: the app's `screenshot` hook, or the browser's screen capture of this tab (drawer cropped off); scaled JPEG + thumbnail. | yes |
+| `ui/settings-panel.js` | The modal: Model / Agent / Tools / Memory / Vision / Context tabs, draft + save, load models, test connection. | yes |
 | `ui/markdown.js` | Escape-first Markdown renderer with code-block actions. | no (string in/out) |
 | `ui/dialogs.js` | `dialogs: 'dock'`: native modal dialogs shown non-modally beside the open drawer, switch events swallowed. | yes |
 | `ui/layout-check.js` | Dev-time check that the pushed layout fits beside the drawer (`devWarnings`). | yes |
@@ -51,7 +53,7 @@ Outside the runtime:
 | `scripts/release-hashes.mjs`, `scripts/release-hashes.json` | Fingerprints of every released runtime and relay, so `detect.mjs` can tell unchanged copies from edited ones. |
 | `scripts/verify.mjs` | Drives headless Edge/Chrome through an integration and reports pass/fail per check. |
 | `scripts/lib/cdp.mjs` | Zero-dependency DevTools-protocol driver (Node 22+ global WebSocket), shared by `verify.mjs` and the browser tests. |
-| `tests/` | `runtime` (pure modules), `relay` (both relays + fake upstream), `browser` (real browser), `example` (Hello World content and tools), `detect` (upgrade detection). |
+| `tests/` | `runtime` (pure modules), `relay` (both relays + fake upstream), `browser` (real browser: keys, dialogs, tools, memory, screenshots), `example` (Hello World content, tools and memory file), `detect` (upgrade detection). |
 
 Everything under `core/` and `adapters/` is DOM-free, which is why the Node relay can import it and the unit tests can
 run without a browser. What needs a browser (`ui/`) is covered by `tests/browser.test.mjs`.
@@ -61,8 +63,10 @@ run without a browser. What needs a browser (`ui/`) is covered by `tests/browser
 1. User presses Enter. `AgentDrawer.send()` checks the configuration (`resolveTarget`) before touching the transcript.
 2. `ContextManager.snapshot()` reads the content hook and fingerprints it; `planTurn()` decides whether to attach it.
 3. The user message is added with its receipt chip (Read the page / Page unchanged); the flag updates.
-4. `buildSystemPrompt()` = editable prompt + app context + page context + screen protocol + formatting rules.
-5. `buildRequestMessages()` = history window with the newest snapshot inlined, older ones stubbed, view state last.
+4. `buildSystemPrompt()` = editable prompt + app context + page context + screen protocol (+ the screenshot rules
+   for vision models) + memory + tools + formatting rules.
+5. `buildRequestMessages()` = history window with the newest snapshot inlined, older ones stubbed, view state last;
+   screenshots attached to the two newest questions that have one go along as images.
 6. `streamChat()` → adapter → `requestStream()`; fragments arrive as `text` / `reasoning` events. With tools, the
    reply may end in tool calls: the drawer checks each (on? here? arguments?), asks the user where the settings say
    so, runs the app's function, and sends the results — plus the screen, if it changed — back for another round,
@@ -78,6 +82,12 @@ run without a browser. What needs a browser (`ui/`) is covered by `tests/browser
 - Screen content is fenced in `<page_snapshot>` with its closing tag neutralised, and the system prompt tells the model
   to treat it as data, not instructions.
 - Actions run only when the user clicks, through the host app's own functions.
+- Memory: the model saves a note only through the `remember` tool, which it is told to use only when the user asks
+  in their own message; every save shows in the chat with Undo; deleting asks first. Notes are marked as data in the
+  prompt, below the rules.
+- Screenshots: taken when the user presses the camera button; the agent takes one itself only when the user has
+  freed it, and otherwise asks (allow once / always / no). The browser's own share prompt stands in front of a screen
+  capture. Saved chats keep thumbnails, never the images; relays check type, size and count.
 - Keys: sessionStorage by default, never in the settings object, redacted from errors; relay for server-side keys.
 - Keystrokes typed in the agent's UI do not reach host shortcut handlers (`isolateKeys`).
 - Relays: local mode (the default) answers only its own computer — a proxied request is never "local" — with an
@@ -96,4 +106,4 @@ connection test come from another. New in this skill: the app/page/content/view 
 protocol with receipts and the flag, the editable system prompt layered with fixed protocol text, the Context
 inspector, app-defined actions, per-tab resume, streaming for all protocols, the shared relay contract — and, from
 the first real integration (1.1), the max-wait debounce, key isolation, dialog docking, the layout check, the relay
-probe, production relays and the verification tooling.
+probe, production relays and the verification tooling; tools (1.2); memory and screenshots for vision models (1.3).

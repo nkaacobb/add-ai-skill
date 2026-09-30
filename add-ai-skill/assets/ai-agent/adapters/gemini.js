@@ -8,14 +8,18 @@
 //   tools: body.tools [{functionDeclarations:[{name, description, parameters}]}]; the reply has parts
 //   {functionCall:{name, args}} (whole, not streamed in pieces), possibly with a thoughtSignature that must be sent
 //   back; results go back as a user turn of {functionResponse:{name, response:{result}}} parts.
+//   images: {inlineData:{mimeType, data}} parts after the text of a user turn; an image a tool returned follows the
+//   functionResponse parts of its round in the same user turn.
 
 import { requestJson, requestStream, joinUrl, AiError } from '../core/transport.js';
-import { normalizeMessages } from '../core/messages.js';
+import { normalizeMessages, imageChars } from '../core/messages.js';
 import { parseArguments } from '../core/tools.js';
 
 const headers = (key) => ({ 'x-goog-api-key': key || '' });
 const modelPath = (m) => encodeURIComponent(String(m || '').replace(/^models\//, ''));
 const BLOCKED = new Set(['SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII', 'RECITATION', 'IMAGE_SAFETY']);
+
+const inline = (i) => ({ inlineData: { mimeType: i.mime, data: i.data } });
 
 /** The current question's tool exchange, as Gemini contents. */
 export function toolTurnContents(toolTurns = []) {
@@ -28,7 +32,13 @@ export function toolTurnContents(toolTurns = []) {
         ...turn.calls.map((c) => ({ functionCall: { name: c.name, args: c.arguments || {} }, ...(c.signature ? { thoughtSignature: c.signature } : {}) })),
       ],
     });
-    out.push({ role: 'user', parts: turn.results.map((r) => ({ functionResponse: { name: r.name, response: { result: String(r.content ?? '') } } })) });
+    out.push({
+      role: 'user',
+      parts: [
+        ...turn.results.map((r) => ({ functionResponse: { name: r.name, response: { result: String(r.content ?? '') } } })),
+        ...turn.results.flatMap((r) => (Array.isArray(r.images) ? r.images.map(inline) : [])),
+      ],
+    });
   }
   return out;
 }
@@ -36,7 +46,7 @@ export function toolTurnContents(toolTurns = []) {
 export function buildChat({ cfg, key, system, messages, maxTokens, temperature, stream = true, tools, toolTurns }) {
   const body = {
     contents: [
-      ...normalizeMessages(messages).map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+      ...normalizeMessages(messages).map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content || '(image)' }, ...(m.images || []).map(inline)] })),
       ...toolTurnContents(toolTurns),
     ],
     generationConfig: {},
@@ -85,7 +95,7 @@ export const gemini = {
         else onEvent(f);
       }
     };
-    const res = await requestStream({ ...r, signal, timeoutMs: cfg.timeoutMs, secrets: [key], fetch }, ({ data }) => {
+    const res = await requestStream({ ...r, signal, timeoutMs: cfg.timeoutMs, secrets: [key], fetch, imageBytes: imageChars(messages, toolTurns) }, ({ data }) => {
       let json;
       try { json = JSON.parse(data); } catch { return; }
       handle(json);

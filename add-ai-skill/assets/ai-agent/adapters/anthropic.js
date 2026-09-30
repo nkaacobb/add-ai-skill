@@ -10,13 +10,17 @@
 //   tools: body.tools [{name, description, input_schema}]; the reply streams content_block_start {type:'tool_use',
 //   id, name} + input_json_delta pieces; the exchange goes back as an assistant message with tool_use blocks and a
 //   user message with tool_result blocks.
+//   images: a user message with `images` becomes content blocks [{type:'image', source:{type:'base64', media_type,
+//   data}}, {type:'text'}]; an image a tool returned goes inside its tool_result block.
 
 import { requestJson, requestStream, joinUrl, AiError } from '../core/transport.js';
-import { normalizeMessages } from '../core/messages.js';
+import { normalizeMessages, imageChars } from '../core/messages.js';
 import { parseArguments } from '../core/tools.js';
 
 const VERSION = '2023-06-01';
 const headers = (key) => ({ 'x-api-key': key || '', 'anthropic-version': VERSION, 'anthropic-dangerous-direct-browser-access': 'true' });
+
+const imageBlock = (i) => ({ type: 'image', source: { type: 'base64', media_type: i.mime, data: i.data } });
 
 /** The current question's tool exchange, as Messages API turns. */
 export function toolTurnMessages(toolTurns = []) {
@@ -29,7 +33,14 @@ export function toolTurnMessages(toolTurns = []) {
         ...turn.calls.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments || {} })),
       ],
     });
-    out.push({ role: 'user', content: turn.results.map((r) => ({ type: 'tool_result', tool_use_id: r.id, content: String(r.content ?? '') })) });
+    out.push({
+      role: 'user',
+      content: turn.results.map((r) => ({
+        type: 'tool_result',
+        tool_use_id: r.id,
+        content: Array.isArray(r.images) && r.images.length ? [{ type: 'text', text: String(r.content ?? '') || 'Done.' }, ...r.images.map(imageBlock)] : String(r.content ?? ''),
+      })),
+    });
   }
   return out;
 }
@@ -38,7 +49,10 @@ export function buildChat({ cfg, key, system, messages, maxTokens, stream = true
   const body = {
     model: cfg.model,
     max_tokens: Number.isFinite(maxTokens) ? maxTokens : 2048,
-    messages: [...normalizeMessages(messages), ...toolTurnMessages(toolTurns)],
+    messages: [
+      ...normalizeMessages(messages).map((m) => (m.images ? { role: m.role, content: [...m.images.map(imageBlock), { type: 'text', text: m.content || '(image)' }] } : m)),
+      ...toolTurnMessages(toolTurns),
+    ],
     stream,
   };
   if (tools?.length) body.tools = tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
@@ -84,7 +98,7 @@ export const anthropic = {
     const r = buildChat({ cfg, key, system, messages, maxTokens, stream: true, tools, toolTurns });
     const usage = {};
     const calls = new Map();
-    const res = await requestStream({ ...r, signal, timeoutMs: cfg.timeoutMs, secrets: [key], fetch }, ({ data }) => {
+    const res = await requestStream({ ...r, signal, timeoutMs: cfg.timeoutMs, secrets: [key], fetch, imageBytes: imageChars(messages, toolTurns) }, ({ data }) => {
       let json;
       try { json = JSON.parse(data); } catch { return; }
       if (json.type === 'message_start') usage.input = json.message?.usage?.input_tokens;

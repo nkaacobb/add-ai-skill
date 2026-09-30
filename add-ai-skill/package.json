@@ -1,6 +1,6 @@
 {
   "name": "add-ai-skill",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "description": "Screen-aware AI agent drawer for any web app: runtime, relays, example, tests and verification tooling (an agent skill).",
   "type": "module",

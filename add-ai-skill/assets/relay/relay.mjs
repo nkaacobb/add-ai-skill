@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ai-agent-drawer — Node relay 1.1 (and optional static file server). Zero dependencies; Node 18+.
+// ai-agent-drawer — Node relay 1.3 (and optional static file server). Zero dependencies; Node 18+.
 //
 //   node relay.mjs [--port 8787] [--host 127.0.0.1] [--path /ai-relay] [--static <dir>] [--config <file>]
 //                  [--allow-remote] [--allow-any-upstream] [--cors <origin>]
@@ -17,6 +17,9 @@
 // Tools (1.2): the request may carry `tools` and `toolTurns` (neutral formats, ../ai-agent/core/tools.js); the relay
 // passes them to the provider and streams the model's calls back as `tool_call` events. Tools run in the browser.
 // A public relay counts one question per chain of tool steps (`turnId`), up to limits.maxToolSteps.
+// Images (1.3): user messages and tool results may carry `images: [{ mime, data }]` (screenshots; base64 PNG, JPEG,
+// WebP or GIF). They are checked (limits.maxImages per request, limits.maxImageBytes each; 0 images = refuse them)
+// and passed to the provider. The GET reply says how many a request may carry (`images`).
 //
 // Configuration (optional): the first of --config <file>, $AIA_RELAY_CONFIG, $AIA_RELAY_DIR/relay.config.{mjs,json},
 // relay.config.{mjs,json} next to this file. A .json file or an .mjs module with `export default { … }`, using the
@@ -39,7 +42,7 @@ import { streamChat, listModels } from '../ai-agent/core/client.js';
 import { PROVIDERS, provider, isLocalUrl } from '../ai-agent/core/providers.js';
 import { sanitizeSettings } from '../ai-agent/core/settings.js';
 
-export const RELAY_VERSION = '1.2.0';
+export const RELAY_VERSION = '1.3.0';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /** A refusal with its HTTP status and the drawer's error code; `detail` only reaches requests from this computer. */
@@ -81,6 +84,8 @@ export function configDefaults(mode = 'local') {
       maxOutputTokens: pub ? 4096 : 64000,
       maxTools: 64,
       maxToolSteps: pub ? 10 : 30,
+      maxImages: pub ? 4 : 16,                                  // screenshots per request (0 = none)
+      maxImageBytes: pub ? 1536 * 1024 : 4 * 1024 * 1024,       // one image, as base64 text
     },
   };
 }
@@ -90,7 +95,7 @@ function normalizePreset(p) {
   const models = (Array.isArray(p.models) ? p.models : []).map(String).filter(Boolean);
   const model = String(p.model || models[0] || '');
   if (model && !models.includes(model)) models.unshift(model);
-  return { provider: p.provider, models, model, baseUrl: String(p.baseUrl || '').trim() };
+  return { provider: p.provider, models, model, baseUrl: String(p.baseUrl || '').trim(), ...(typeof p.vision === 'boolean' ? { vision: p.vision } : {}) };
 }
 
 export function normalizeConfig(raw = {}, source = '') {
@@ -253,9 +258,30 @@ export function createLimiter(cfg, { now = () => Date.now() } = {}) {
 /* ------------------------------------------------------------------------------------------ the relay */
 
 const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const IMAGE_MIME = /^image\/(png|jpeg|webp|gif)$/;
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/** The images of one message or tool result, checked against the limits. `tally` counts them across the request. */
+function imagesFrom(list, cfg, tally) {
+  if (!Array.isArray(list) || !list.length) return [];
+  const max = cfg.limits.maxImages;
+  if (!max) throw new RelayError(400, 'refused', 'This assistant does not accept images. Turn off "This model can see images" in Settings > Vision.');
+  const out = [];
+  for (const i of list) {
+    const mime = String(i?.mime || '');
+    const data = typeof i?.data === 'string' ? i.data : '';
+    if (!IMAGE_MIME.test(mime) || data.length < 16 || !BASE64.test(data)) throw new RelayError(400, 'malformed', 'An attached image is not a valid PNG, JPEG, WebP or GIF.');
+    if (cfg.limits.maxImageBytes > 0 && data.length > cfg.limits.maxImageBytes) throw new RelayError(413, 'budget', 'A screenshot is too large for the assistant.');
+    tally.count += 1;
+    tally.chars += data.length;
+    if (tally.count > max) throw new RelayError(413, 'budget', `Too many screenshots in one request (limit ${max}). Remove one, or start a new chat.`);
+    out.push({ mime, data });
+  }
+  return out;
+}
 
 /** Tools and the tool exchange from a request, checked and trimmed to the neutral formats. */
-function toolsFrom(body, cfg) {
+function toolsFrom(body, cfg, tally = { count: 0, chars: 0 }) {
   const tools = Array.isArray(body.tools) ? body.tools : [];
   const turns = Array.isArray(body.toolTurns) ? body.toolTurns : [];
   if (tools.length > cfg.limits.maxTools) throw new RelayError(413, 'budget', `Too many tools in one request (${tools.length}, limit ${cfg.limits.maxTools}).`);
@@ -269,7 +295,10 @@ function toolsFrom(body, cfg) {
   const cleanTurns = turns.map((t) => ({
     text: String(t?.text || ''),
     calls: (Array.isArray(t?.calls) ? t.calls : []).filter((c) => TOOL_NAME.test(String(c?.name || ''))).map((c) => ({ id: String(c.id || '').slice(0, 128), name: c.name, arguments: obj(c.arguments), ...(c.signature ? { signature: String(c.signature) } : {}) })),
-    results: (Array.isArray(t?.results) ? t.results : []).map((r) => ({ id: String(r?.id || '').slice(0, 128), name: String(r?.name || ''), content: String(r?.content ?? '').slice(0, 100000) })),
+    results: (Array.isArray(t?.results) ? t.results : []).map((r) => {
+      const images = imagesFrom(r?.images, cfg, tally);
+      return { id: String(r?.id || '').slice(0, 128), name: String(r?.name || ''), content: String(r?.content ?? '').slice(0, 100000), ...(images.length ? { images } : {}) };
+    }),
   }));
   return { tools: cleanTools, toolTurns: cleanTurns };
 }
@@ -308,20 +337,21 @@ export function createRelay(cfg, { cors = '', isLocal = isLocalRequest, env = pr
     res.end(JSON.stringify(body));
   };
 
+  const presetInfo = (p) => ({ provider: p.provider, model: p.model, models: p.models, ...(typeof p.vision === 'boolean' ? { vision: p.vision } : {}) });
+
   function info(req, res) {
     const local = isLocal(req);
     const base = { ok: true, relay: 'ai-agent-drawer', version: RELAY_VERSION, mode: cfg.mode };
-    const unavailable = (reason, detail = '') => json(res, 200, { ...base, available: false, providers: [], serverKeys: {}, preset: null, reason, ...(local && detail ? { detail } : {}) });
+    const unavailable = (reason, detail = '') => json(res, 200, { ...base, available: false, providers: [], serverKeys: {}, preset: null, images: 0, reason, ...(local && detail ? { detail } : {}) });
     if (!pub && !cfg.allowRemote && !local) return unavailable('This relay only answers requests from the computer it runs on.');
     if (pub) {
       const problem = publicProblem(cfg, env);
       if (problem) { console.error(`[ai-agent relay] ${problem}`); return unavailable('The assistant is not available right now.', problem); }
       const p = cfg.preset;
-      return json(res, 200, { ...base, available: true, providers: [p.provider], serverKeys: { [p.provider]: true }, preset: { provider: p.provider, model: p.model, models: p.models }, limits: { perMinute: cfg.limits.perMinute, perDay: cfg.limits.perDay } });
+      return json(res, 200, { ...base, available: true, providers: [p.provider], serverKeys: { [p.provider]: true }, preset: presetInfo(p), images: cfg.limits.maxImages, limits: { perMinute: cfg.limits.perMinute, perDay: cfg.limits.perDay } });
     }
     const serverKeys = Object.fromEntries(Object.values(PROVIDERS).filter((p) => p.keyEnv).map((p) => [p.id, !!serverKey(p.id, cfg, env)]));
-    const preset = cfg.preset ? { provider: cfg.preset.provider, model: cfg.preset.model, models: cfg.preset.models } : null;
-    return json(res, 200, { ...base, available: true, providers: Object.keys(PROVIDERS), serverKeys, preset });
+    return json(res, 200, { ...base, available: true, providers: Object.keys(PROVIDERS), serverKeys, preset: cfg.preset ? presetInfo(cfg.preset) : null, images: cfg.limits.maxImages });
   }
 
   /** Which provider, address, model and key a request may use -> shared-client settings. */
@@ -389,7 +419,9 @@ export function createRelay(cfg, { cors = '', isLocal = isLocalRequest, env = pr
       await authorize(req, cfg);
 
       let body;
-      const raw = await readBody(req, cfg.limits.maxBodyBytes);
+      // Screenshots come on top of the text cap (they have their own: maxImages × maxImageBytes).
+      const textCap = cfg.limits.maxBodyBytes;
+      const raw = await readBody(req, textCap > 0 ? textCap + cfg.limits.maxImages * cfg.limits.maxImageBytes : 0);
       try { body = JSON.parse(raw); } catch { throw new RelayError(400, 'malformed', 'The request body was not valid JSON.'); }
       if (!body || typeof body !== 'object') throw new RelayError(400, 'malformed', 'The request body was not valid JSON.');
 
@@ -409,11 +441,17 @@ export function createRelay(cfg, { cors = '', isLocal = isLocalRequest, env = pr
         return;
       }
 
-      const messages = Array.isArray(body.messages) ? body.messages : [];
-      if (cfg.limits.maxMessages > 0 && messages.length > cfg.limits.maxMessages) {
-        throw new RelayError(413, 'budget', `This conversation is too long for the assistant (${messages.length} messages, limit ${cfg.limits.maxMessages}). Start a new chat, or lower "Conversation memory" in Settings > Agent.`);
+      const rawMessages = Array.isArray(body.messages) ? body.messages : [];
+      if (cfg.limits.maxMessages > 0 && rawMessages.length > cfg.limits.maxMessages) {
+        throw new RelayError(413, 'budget', `This conversation is too long for the assistant (${rawMessages.length} messages, limit ${cfg.limits.maxMessages}). Start a new chat, or lower "Conversation memory" in Settings > Agent.`);
       }
-      const { tools, toolTurns } = toolsFrom(body, cfg);
+      const tally = { count: 0, chars: 0 };
+      const messages = rawMessages.map((m) => {
+        const images = m?.role === 'user' ? imagesFrom(m.images, cfg, tally) : [];
+        return { role: m?.role, content: m?.content, ...(images.length ? { images } : {}) };
+      });
+      const { tools, toolTurns } = toolsFrom(body, cfg, tally);
+      if (textCap > 0 && raw.length - tally.chars > textCap) throw new RelayError(413, 'budget', 'The request is too large for the assistant. Lower "Max screen content" or "Conversation memory" in Settings > Agent.');
       if (pub) limiter.hit(req.socket?.remoteAddress, { turn: String(body.turnId || '').slice(0, 64), continuation: toolTurns.length > 0 });
 
       res.writeHead(200, {

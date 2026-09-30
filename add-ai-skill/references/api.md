@@ -1,8 +1,8 @@
 # API reference
 
 `import { createAiAgent, fromDom, DEFAULT_SYSTEM_PROMPT } from './ai-agent/ai-agent.js'` and load `ai-agent/ai-agent.css`.
-Types: `assets/ai-agent/ai-agent.d.ts`. Runtime version: `VERSION` (1.2.0). Tools (the agent acting in the app):
-`tools.md`.
+Types: `assets/ai-agent/ai-agent.d.ts`. Runtime version: `VERSION` (1.3.0). Tools (the agent acting in the app):
+`tools.md`. Memory and screenshots: `memory-and-vision.md`.
 
 ## createAiAgent(options) → agent
 
@@ -19,7 +19,7 @@ probe (if any) have been applied — questions wait for it automatically.
 | `systemPrompt` | `DEFAULT_SYSTEM_PROMPT` | The app's default prompt (string or function). Users can override it in Settings > Agent; "Restore app default" brings this back. |
 | `welcome` | generic | Markdown shown at the start of each chat. |
 | `suggestions` | `[]` | Clickable starter questions under the welcome. |
-| `placeholder` | generic | Composer placeholder. |
+| `placeholder` | `'Ask about what is on screen…'` | Composer placeholder. |
 | `toggle` | `null` | Selector/element(s) that toggle the drawer. None → floating launcher (unless `launcher: false`). |
 | `toggleBadge` | `true` | Adds a coloured context-state dot on toggles (`[data-aia-toggle][data-aia-context]`; see "Theming"). |
 | `push` | `document.body` | Element(s) that get `padding-right` = drawer width while open. `false` = overlay. Below 900 px wide the drawer always overlays. Shells with fixed-width columns need the recipe in `frameworks.md` ("Layout"). |
@@ -36,6 +36,12 @@ probe (if any) have been applied — questions wait for it automatically.
 | `contextWarnTokens` | `3000` | Settings > Context warns (local providers) when the first request is estimated above this. |
 | `tools` | `[]` | The app's tool catalog: `[{ name, title?, description, parameters?, effect: 'read'\|'write'\|'destructive', pages?, when?, group?, enabled?, timeoutMs?, run(args, ctx) }]`. The model calls them; see `tools.md`. Invalid definitions are skipped with a console error. |
 | `toolsConfig` | `null` | The app's default tool selection and switches (`ai-tools.json`): a URL, an object, or a (possibly async) function. Applied like `defaults` (questions wait for it). |
+| `memory` | `true` | Notes the agent keeps between conversations: the Settings > Memory tab, the MEMORY section of the system prompt, and the built-in `remember` / `forget` tools. `false` removes all of it (`agent.memory` is then `null`). |
+| `memoryFile` | `null` | The app's starting memories (`ai-memory.json`): a URL, an object, or a (possibly async) function. What a user adds, edits or deletes is kept in their browser on top of it. Applied like `defaults` (questions wait for it). |
+| `memorySave` | `null` | `(file) => void \| Promise`: called (debounced) with the whole memory file after every change made in this browser, for apps whose backend keeps the notes. |
+| `screenshots` | `true` | Screenshots for models that see images: the Settings > Vision tab, the camera button, the built-in `take_screenshot` tool. `false` removes all of it. |
+| `screenshot` | `null` | `({ reason }) => canvas \| image \| video \| ImageBitmap \| ImageData \| Blob \| data URL \| null` (or a promise): the app's own picture of what the user is looking at. Without it, or when it returns `null`, the browser's screen capture of this tab is used. |
+| `screenshotMaxEdge` | `1280` | Screenshots are scaled down so their longer edge is at most this many pixels (256–4096). |
 | `codeActions` | `[]` | `[{ id, label, title?, when?(block), run(block, agent), doneLabel? }]` → buttons on fenced code blocks (`block = { language, code }`). Copy is built in. For values the app applies, see `parseBlockValues` and `setControlValue`. |
 | `replyActions` | `[]` | `[{ id, label, title?, run(markdown, agent), doneLabel? }]` → buttons under each reply. Copy is built in. |
 | `defaults` | `{}` | App defaults for any setting (see "Settings"). User choices override them. May be an object, a promise, or a (possibly async) function. |
@@ -74,7 +80,7 @@ agent.setPage({
 | `ask(text)` | Send a question as the user (opens the drawer). Returns when the reply has finished. |
 | `stop()` | Abort the streaming reply (partial text is kept and marked). |
 | `newChat()` | Save the current chat and start a new one (flag → *unread*). |
-| `openSettings('model' \| 'agent' \| 'context')` | Open the settings modal on a tab. The Context tab shows exactly what the hooks produce, and the estimated size of the first request. |
+| `openSettings('model' \| 'agent' \| 'tools' \| 'memory' \| 'vision' \| 'context')` | Open the settings modal on a tab. The Context tab shows exactly what the hooks produce, and the estimated size of the first request. |
 | `setApp(app)` | Replace the app context. |
 | `setPage(page)` | Replace the page (navigation). Recomputes the flag immediately. |
 | `setContent(fn)`, `setView(fn)` | Replace only the current page's content/view hook. |
@@ -85,13 +91,17 @@ agent.setPage({
 | `rereadPage()` | Force the next question to carry a fresh snapshot. |
 | `systemPrompt()` | Resolves to the full system prompt as it would be sent now. |
 | `ready` | Promise resolving to the agent once async `defaults` and `relayProbe` are applied (immediately without them). |
-| `relayInfo()` | What the relay probe found (`{ url, available, mode, preset, providers, serverKeys, reason }`), or `null`. |
+| `relayInfo()` | What the relay probe found (`{ url, available, mode, preset, providers, serverKeys, images, reason }`), or `null`. |
 | `tools.list()` | Every tool known now (app-wide + this page): `{ name, title, description, effect, group, pages, enabled, available }`. |
 | `tools.register(defs)`, `tools.unregister(name)` | Add/replace or remove app-wide tools at runtime. |
 | `tools.setEnabled(name, on)` | Turn a tool on/off for this user (saved like Settings > Tools). |
 | `tools.run(name, args)` | Run a tool directly (validated arguments, no confirmation, ignores on/off) — for tests and scripted checks. Resolves to the text the model would receive. |
 | `tools.exportConfig()` | The current selection as an `ai-tools.json` object. |
-| `on(event, fn)` | Events: `open` (`{}`, or `{ resumed: true }` — see below), `close`, `send` `{text, attached, reason, hash}`, `reply` `{text, provider, model, stopped, actions}`, `error` `{error}`, `context` (status), `settings` (settings), `relay` (relay info), `tool` `{name, args, status: 'ok'\|'error'\|'declined'\|'off'\|'skipped', result}`, `tool-state` `{name, enabled}`. Returns unsubscribe. |
+| `memory.list()` | The memories: `[{ id, text, created, updated?, source: 'user' \| 'agent' \| 'app' }]`. `agent.memory` is `null` with `memory: false`. |
+| `memory.add(text)`, `memory.update(id, text)`, `memory.remove(id)`, `memory.clear()` | Change them (saved at once; the same note is not added twice; at most 100 notes of 500 characters). |
+| `memory.export()`, `memory.import(file, { replace })` | The memories as an `ai-memory.json` object; add the memories of such a file (or make them the whole memory). |
+| `screenshot()` | Take a screenshot and put it in the composer for the next question — what the camera button does. With the browser's screen capture, call it from a click. Resolves to `{ width, height, source: 'app' \| 'screen' }` or `null`. |
+| `on(event, fn)` | Events: `open` (`{}`, or `{ resumed: true }` — see below), `close`, `send` `{text, attached, reason, hash}`, `reply` `{text, provider, model, stopped, actions}`, `error` `{error}`, `context` (status), `settings` (settings), `relay` (relay info), `tool` `{name, args, status: 'ok'\|'error'\|'declined'\|'off'\|'skipped', result}`, `tool-state` `{name, enabled}`, `memory` `{memories, change: {type, id?}}`, `screenshot` `{by: 'user'\|'agent', width, height, source}`. Returns unsubscribe. |
 | `settings.get()`, `settings.save(patch)`, `settings.reset()`, `settings.setKey(provider, key)` | Programmatic settings. |
 | `destroy()` | Remove everything the agent added. |
 
@@ -142,6 +152,10 @@ if (agent.isOpen()) onOpen();          // safe either way: make onOpen idempoten
 | `confirmDestructive` | `true` | Ask before tools with `effect: 'destructive'`. |
 | `maxToolSteps` | `8` | Tool rounds per question. |
 | `toolStates` | `{}` | `{ toolName: true \| false }`, merged over `toolsConfig` and each tool's `enabled`. Only differences from the app defaults are stored. |
+| `memoryEnabled` | `true` | The memories are part of every conversation (Settings > Memory). |
+| `memoryWrite` | `true` | The agent may save, correct and delete memories when the user asks (`remember`, `forget`). Off: the model is told it cannot, and the tools are not offered. |
+| `vision` | `true` | The model sees images: the camera button and screenshots are offered. Set `defaults: { vision: false }` for a text-only default model. A relay without image support switches it off. |
+| `screenshotAuto` | `false` | The agent may take a screenshot on its own (`take_screenshot`). Off: only the camera button; the agent can ask, and the user allows it once or always. |
 
 Layering: built-in defaults < `defaults` (applied late when async / probed) < what the user saved.
 
@@ -202,7 +216,22 @@ value or text. Returns `true` when the control now holds the value.
 ## Other exports
 
 `renderMarkdown(md, { codeActions })`, `hashText(str)`, `stableStringify(value)`, `probeRelay(url, { timeoutMs })`,
-`DEFAULT_SYSTEM_PROMPT`, `PROVIDERS`, `PROVIDER_IDS`, `AiError`, `VERSION`.
+`parseMemoryFile(json)`, `exportMemoryFile(memories)`, `DEFAULT_SYSTEM_PROMPT`, `PROVIDERS`, `PROVIDER_IDS`, `AiError`,
+`VERSION`.
+
+## Built-in tools
+
+Besides the app's tools (`tools.md`) the runtime has three of its own. They are not listed in Settings > Tools and do
+not follow its master switch; each follows its own setting. An app tool with the same name replaces the built-in one.
+
+| Tool | Offered when | Asks the user |
+| --- | --- | --- |
+| `remember(text, id?)` | Memory on, and "Let the agent save a memory…" on | No: the chip shows what was saved, with Undo |
+| `forget(id)` | The same | Yes, like a tool that changes something ("Ask me before actions that change something") |
+| `take_screenshot()` | "This model can see images" on and a picture can be taken. Callable when the user freed it; otherwise listed as turned off, so the model can ask for it | Not when freed (with the browser's screen capture: one click to share the tab, once per page load). Otherwise: *Allow once* / *Always allow* / *No* |
+
+With these, a request carries tool definitions even in an app without tools of its own; a model server without tool
+calling gets them as text blocks (Settings > Tools > "How tools are called", automatic by default).
 
 ## Theming and host hooks
 

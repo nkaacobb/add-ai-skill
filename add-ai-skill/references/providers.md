@@ -84,7 +84,8 @@ otherwise), or `defaults: { transport: 'relay', relayUrl }`, or in Settings > Mo
 | Who | Requests from the relay's own computer only (a request that came through a proxy — `X-Forwarded-For`, `Forwarded`… — is not local). `allowRemote: true` / `--allow-remote` opens it up: then put `authorize` in front. | Anyone who can load the app. |
 | Provider / model / key | What the user chose; the user's key, or the server's. Local providers may only target loopback/LAN addresses (`allowAnyUpstream`). | Only the configured `preset`: other providers or models are refused with a clear message; visitor keys are never forwarded. |
 | Origin | – | Same-origin enforced: `X-Requested-With: ai-agent-drawer` required, `Origin` must be the relay's own host (or in `allowedOrigins`), `Sec-Fetch-Site` must be `same-origin`. No CORS headers, ever. |
-| Limits | Body 4 MB; 64 tools and 30 tool steps per question. | Per visitor per minute and per day, plus a site-wide daily cap (HTTP 429 + `Retry-After`) — one question per chain of tool steps (`turnId`), up to `maxToolSteps` (10); body, message-count, reply-token and tool (64) caps. |
+| Limits | Body 4 MB; 64 tools and 30 tool steps per question; 16 images of 4 MB. | Per visitor per minute and per day, plus a site-wide daily cap (HTTP 429 + `Retry-After`) — one question per chain of tool steps (`turnId`), up to `maxToolSteps` (10); body, message-count, reply-token and tool (64) caps; 4 images of 1.5 MB (`maxImages`, `maxImageBytes`). |
+| Images (1.3) | Screenshots (`images: [{ mime, data }]` on user messages and tool results: base64 PNG, JPEG, WebP or GIF) are checked and passed to the provider. They come **on top of** `maxBodyBytes`, which stays the cap for the text. `maxImages: 0` refuses images. | The same; set `'vision' => true\|false` in the `preset` to say whether its model sees images (the drawer's default for visitors). |
 | Errors | Full details. | Visitors get generic messages; configuration details go only to requests from the server itself and to the error log. |
 
 Rate-limit state is a small JSON file (PHP: `flock`ed; Node: in memory, mirrored to the file when `dataDir` is set)
@@ -121,16 +122,17 @@ the key the user typed.
 
 ```
 GET {relayUrl}   (always 200, so a probe never logs an error)
-→ { "ok": true, "relay": "ai-agent-drawer", "version": "1.1.0", "available": true|false, "mode": "local"|"public",
-    "providers": [...], "serverKeys": {"openai": true, …}, "preset": {"provider","model","models":[…]} | null,
+→ { "ok": true, "relay": "ai-agent-drawer", "version": "1.3.0", "available": true|false, "mode": "local"|"public",
+    "providers": [...], "serverKeys": {"openai": true, …}, "preset": {"provider","model","models":[…],"vision"?} | null,
+    "images": 4,                           (how many images one request may carry; 0 = none; absent before 1.3)
     "reason"?: "…", "detail"?: "… (requests from the server itself only)" }
 
 POST {relayUrl}   Content-Type: application/json   X-Requested-With: ai-agent-drawer (+ relayHeaders)
 { "action": "chat", "provider": "anthropic", "baseUrl": "…", "model": "…", "apiKey": "" ,
-  "system": "…", "messages": [{ "role": "user", "content": "…" }], "maxTokens": 4096, "temperature": 0.4,
-  "reasoning": "show",
+  "system": "…", "messages": [{ "role": "user", "content": "…", "images"?: [{ "mime": "image/jpeg", "data": "<base64>" }] }],
+  "maxTokens": 4096, "temperature": 0.4, "reasoning": "show",
   "tools": [{ "name": "…", "description": "…", "parameters": { JSON Schema } }],                       (optional)
-  "toolTurns": [{ "text": "…", "calls": [{ "id", "name", "arguments": {} }], "results": [{ "id", "name", "content" }] }],
+  "toolTurns": [{ "text": "…", "calls": [{ "id", "name", "arguments": {} }], "results": [{ "id", "name", "content", "images"? }] }],
   "turnId": "…" }
 → 200 text/event-stream
   : open                                   (comment: flushes the headers through every layer)
@@ -149,6 +151,10 @@ POST {relayUrl}  { "action": "models", "provider": "…", "baseUrl": "…", "api
 
 `code` is one of the drawer's error codes and `message` is written for the user: the drawer shows them as they are.
 
+A relay older than 1.3 would drop images without a word, so before the first request that carries one the drawer asks
+the relay (the GET above) and, when `images` is missing or 0, refuses the question with "the relay cannot pass images"
+instead. With `relayProbe`, such a relay also switches "This model can see images" off.
+
 ### Nginx + PHP-FPM
 
 - **No rewrites and no `.htaccess`**: requests go straight to `relay.php` like any PHP file.
@@ -164,13 +170,16 @@ POST {relayUrl}  { "action": "models", "provider": "…", "baseUrl": "…", "api
       fastcgi_buffering off;
       fastcgi_read_timeout 330s;         # above the relay's 'timeout' (300 s)
       gzip off;
-      client_max_body_size 1m;           # above the relay's maxBodyBytes
+      client_max_body_size 8m;           # above maxBodyBytes + maxImages × maxImageBytes (public: 0.5 + 4 × 1.5 MB)
       fastcgi_param AIA_RELAY_DIR /var/www/example-app/ai-agent-relay;
       fastcgi_param OPENAI_API_KEY "sk-…";   # or env[OPENAI_API_KEY] in the PHP-FPM pool
   }
   ```
 - `gzip_types` must **not** include `text/event-stream` (compression buffers the stream).
 - `open_basedir`, if set, must include the relay's data folder (`AIA_RELAY_DIR`).
+- Screenshots make requests larger: besides `client_max_body_size`, PHP's `post_max_size` (8 MB by default) must be
+  above the largest request — PHP silently discards a larger body, and the relay then answers 413 with the reason (to
+  requests from the server itself). Apache: `LimitRequestBody`.
 - The PHP curl extension must be installed (`php8.x-curl` on Debian/Ubuntu).
 - PHP-FPM's `clear_env = yes` (default) hides the process environment from PHP: pass keys with `fastcgi_param` or
   `env[NAME] = …` in the pool.

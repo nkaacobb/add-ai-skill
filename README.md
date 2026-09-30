@@ -5,7 +5,8 @@ build it into an app on request:
 
 > **Application X has an AI agent that slides out from the right, sees what is on the current screen
 > (plus what the app and the page are for), can act in the app through its own functions (you confirm changes and
-> choose which tools are on), answers in rich Markdown, and can use any LLM — LM Studio by default.**
+> choose which tools are on), remembers what you ask it to remember, can look at a screenshot of what you are looking
+> at, answers in rich Markdown, and can use any LLM — LM Studio by default.**
 
 | | |
 | --- | --- |
@@ -33,9 +34,11 @@ copies (it also removes copies installed under the old name `ai-agent-drawer`). 
 ## Apps that already have the agent
 
 Run the skill again in the app — no special prompt needed. Its first step (`scripts/detect.mjs`) finds the existing
-integration and its version, and the skill **upgrades** it (`references/upgrading.md`): new runtime and relay, config
-migrated, workarounds removed, new features offered (such as tools), a record written (`ai-agent.integration.json`) —
-never a second agent. You can narrow it: "/add-ai-skill just update the runtime" or "/add-ai-skill add tools".
+integration, its version, and which features it already has and uses (tools, memory, vision). The skill then
+**upgrades** it (`references/upgrading.md`): new runtime and relay, config migrated, workarounds removed, and **only
+the pieces that are missing** added — what is already there (hooks, tools, settings, saved chats) stays. A record is
+written (`ai-agent.integration.json`); there is never a second agent. You can narrow it: "/add-ai-skill just update
+the runtime", "/add-ai-skill add tools", "/add-ai-skill add memory and screenshots".
 
 ```powershell
 node add-ai-skill/scripts/detect.mjs D:\path\to\app      # see what an app has, without changing anything
@@ -52,8 +55,8 @@ Open the app and ask your agent:
 The skill tells the agent to survey the app (including its production stack, keyboard shortcuts, modal dialogs,
 layout, and everything the user can do on each page), propose a context plan and a **tool plan**, copy the runtime
 in, mount one agent, wire `setPage` / `content` / `view` for every page, signal changes, fit the host app, build the
-tools over the app's own functions (with `ai-tools.json` choosing which are on), optionally add a relay, and verify
-with `scripts/verify.mjs`.
+tools over the app's own functions (with `ai-tools.json` choosing which are on), seed the agent's memory
+(`ai-memory.json`) and choose how screenshots are taken, optionally add a relay, and verify with `scripts/verify.mjs`.
 You can steer it, e.g. "…and put the Ask AI button next to the search box" or "…use the PHP relay in public mode".
 
 ## Run the Hello World app
@@ -74,8 +77,14 @@ N chars · hash** and the status bar flag turns green. Edit the text: the flag t
 re-read; ask once more without editing: **Page unchanged**. Ask "make the text bigger": the agent answers with an
 editor-settings block and an **Apply editor settings** button. Ask "fix the spelling mistakes": the agent calls its
 `replace_text` tool and asks you to confirm before the document changes. Ask "rename the file to notes.txt": that
-tool is off by default, so it offers a **Turn on** button first. **Settings → Tools** has a checkbox per tool. Click the flag to see exactly what the AI receives
-(Settings → Context, including the estimated token size).
+tool is off by default, so it offers a **Turn on** button first. **Settings → Tools** has a checkbox per tool. Click
+the flag to see exactly what the AI receives (Settings → Context, including the estimated token size).
+
+Memory and vision: ask "which shortcut saves the document?" (it knows from `ai-memory.json`), then "remember that I
+prefer British spelling" — a **Remember** chip with Undo; **Settings → Memory** lists, edits and exports the notes.
+With a model that sees images, press the **camera button** beside Send: the browser asks to share the tab, a thumbnail
+appears in the composer, and the agent answers about the picture. Ask it to "look at my screen": it asks first
+(**Allow once / Always allow / No**). **Settings → Vision** has the two switches.
 
 ## How it works (short version)
 
@@ -99,14 +108,14 @@ add-ai-skill/
   CHANGELOG.md             what changed per version, with upgrade notes for apps
   agents/openai.yaml       Codex display metadata
   assets/ai-agent/         the runtime (copied into apps unchanged): ai-agent.js · ai-agent.css · ai-agent.d.ts
-    core/                  context, sync protocol, hashing, prompt, settings, providers, client, transport, relay probe, block values
+    core/                  context, sync protocol, hashing, prompt, settings, providers, client, transport, relay probe, block values, tools, memory
     adapters/              openai-chat (LM Studio/Ollama/OpenAI/DeepSeek/OpenRouter/custom), anthropic, gemini, relay
-    ui/                    drawer, settings modal, markdown, resize, dialog docking, layout check
+    ui/                    drawer, settings modal, markdown, resize, dialog docking, layout check, screenshot capture
   assets/relay/            relay.php (PHP 8.1+) · relay.mjs (Node) · relay.config.example.php — copied unchanged, configured by a file
   examples/hello-world/    the demo: app.js (the editor) · ai-agent-setup.js (the integration) · content.js (pure, tested)
-                           · ai-tools.js (8 tools) · ai-tools.json (which are on)
-  references/              upgrading · api · tools · context-sync · frameworks · providers · checklist · architecture
-  scripts/detect.mjs       run first on any app: is the agent there, which version, what to upgrade
+                           · ai-tools.js (8 tools) · ai-tools.json (which are on) · ai-memory.json (starting notes)
+  references/              upgrading · api · tools · memory-and-vision · context-sync · frameworks · providers · checklist · architecture
+  scripts/detect.mjs       run first on any app: is the agent there, which version, which features, what to upgrade
   scripts/verify.mjs       checks an integration in headless Edge/Chrome (scripts/lib/cdp.mjs is its driver)
   tests/                   node --test: runtime · relays (Node + PHP) · real browser · example
   package.json             npm test · npm run demo · npm run verify

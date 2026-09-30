@@ -25,6 +25,8 @@
 //   typing      a space and letters typed in the composer land in the composer (host shortcuts do not steal them)
 //   context     Settings > Context: estimated size of the first request
 //   tools       the tool catalog (on / off / usable here); runs the reading tools that need no arguments
+//   memory      the memories the agent starts with (the app's memory file + this browser's)
+//   vision      takes one screenshot the way the camera button does: the app's hook, or the browser's screen capture
 //   layout@W    at each width: no horizontal overflow, nothing under the drawer, the toggle still visible
 //   ask         "Read the page" receipt, flag synced                                         (needs a model)
 //   change      after --change the flag turns "dirty"; the next question re-reads the page  (needs a model)
@@ -138,7 +140,8 @@ async function ask(page, text) {
 
 async function main() {
   fs.mkdirSync(O.out, { recursive: true });
-  const browser = await launchBrowser({ executable: O.browser, headless: !O.headed, width: O.widths[0] || 1366 });
+  // --auto-accept-this-tab-capture: the browser's "share this tab" prompt is accepted without a person (the vision check).
+  const browser = await launchBrowser({ executable: O.browser, headless: !O.headed, width: O.widths[0] || 1366, args: ['--auto-accept-this-tab-capture'] });
   const { page } = browser;
   console.log(`browser: ${browser.executable}\npage:    ${url}\n`);
   try {
@@ -213,6 +216,40 @@ async function main() {
       const ran = tl.runs.filter((r) => r[1] === 'ok').map((r) => r[0]);
       record('tools', failed.length ? 'fail' : 'pass', `${tl.list.length} tools (${on} on, ${tl.list.length - on} off, ${here} usable here); reading tools ran: ${ran.join(', ') || 'none without arguments'}${failed.length ? `; FAILED: ${failed.map((r) => `${r[0]}: ${r[2]}`).join('; ')}` : ''}`);
     }
+
+    // Memory: what the agent knows from the start.
+    const mem = await page.evaluate(`(async () => {
+      let a = null; try { a = (${O.agent}) || null; } catch {}
+      if (!a) return null;
+      await a.ready;
+      if (a.memory === undefined) return { old: true };
+      if (a.memory === null) return { off: true };
+      const list = a.memory.list();
+      return { count: list.length, app: list.filter((m) => m.source === 'app').length, enabled: a.settings.get().memoryEnabled, write: a.settings.get().memoryWrite };
+    })()`);
+    if (!mem) record('memory', 'skip', 'agent object not reachable (pass --agent)');
+    else if (mem.old) record('memory', 'skip', 'this runtime has no memory (older than 1.3)');
+    else if (mem.off) record('memory', 'info', 'memory is switched off for this app (memory: false)');
+    else record('memory', 'pass', `${mem.count} memor${mem.count === 1 ? 'y' : 'ies'} (${mem.app} from the application's memory file)${mem.enabled ? '' : '; switched off in Settings > Memory'}${mem.write ? '' : '; the agent may not save new ones'}`);
+
+    // Vision: one screenshot, taken the way the camera button takes it (the browser here accepts tab sharing itself).
+    const vis = await page.evaluate(`(async () => {
+      let a = null; try { a = (${O.agent}) || null; } catch {}
+      if (!a) return null;
+      if (typeof a.screenshot !== 'function') return { old: true };
+      const btn = document.querySelector('.aia-shot-btn');
+      if (!btn || btn.hidden) return { hidden: true, vision: a.settings.get().vision };
+      const before = document.querySelectorAll('.aia-drawer .aia-error').length;
+      const shot = await a.screenshot();
+      const errors = [...document.querySelectorAll('.aia-drawer .aia-error')].slice(before).map((e) => e.textContent.trim());
+      document.querySelectorAll('.aia-attach [data-shot-remove]').forEach((b) => b.click());
+      return { shot, errors, auto: a.settings.get().screenshotAuto };
+    })()`);
+    if (!vis) record('vision', 'skip', 'agent object not reachable (pass --agent)');
+    else if (vis.old) record('vision', 'skip', 'this runtime has no screenshots (older than 1.3)');
+    else if (vis.hidden) record('vision', 'info', vis.vision ? 'no camera button: screenshots are switched off for this app, or this browser cannot capture the page' : 'vision is switched off (Settings > Vision, or defaults.vision: false): no camera button');
+    else if (!vis.shot) record('vision', 'fail', `the screenshot failed: ${vis.errors.join(' | ') || 'no picture came back'}`);
+    else record('vision', 'pass', `${vis.shot.width} × ${vis.shot.height} px from ${vis.shot.source === 'app' ? 'the application\'s screenshot hook' : 'the browser\'s screen capture (users are asked to share the tab)'}; the agent may take screenshots on its own: ${vis.auto ? 'yes' : 'no (camera button only)'}`);
 
     // Layout at each width.
     for (const w of O.widths) {

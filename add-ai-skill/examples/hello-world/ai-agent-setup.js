@@ -11,6 +11,10 @@
 //
 // Tools (ai-tools.js) let the agent act: find, insert, replace, change editor settings, rename, start over. Which
 // ones are on comes from ai-tools.json (the app's defaults) and from each user's Settings > Tools.
+//
+// Memory and vision come with the runtime: ai-memory.json holds what the agent should know from the start (a keyboard
+// shortcut it could not see on screen); users add more by asking it to remember something. Screenshots use the
+// browser's screen capture here (an app that draws on a canvas passes a `screenshot` hook instead).
 
 import { createAiAgent, DEFAULT_SYSTEM_PROMPT, parseBlockValues, setControlValue } from '../../assets/ai-agent/ai-agent.js';
 import { editorContent, editorView, EDITOR_SETTINGS } from './content.js';
@@ -36,6 +40,9 @@ export function mountAgent(app) {
     // What the agent can do, and which of it is turned on by default.
     tools: editorTools(app),
     toolsConfig: 'ai-tools.json',
+
+    // What the agent remembers between conversations: the app's starting notes; each user's own are added on top.
+    memoryFile: 'ai-memory.json',
 
     // What this application is. Goes into the system prompt on every request. Keep it short: titles and lists.
     app: {

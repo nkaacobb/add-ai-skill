@@ -67,3 +67,15 @@ test('hello-world: the model\'s editor-settings block is read leniently and clam
   assert.equal(read('json', '{"fontSize": 16, "theme": "dark"}'), null, 'json with an unknown key is not a settings block');
   assert.equal(read('text', 'Some rewritten paragraph.'), null, 'rewrites keep their Insert/Replace buttons');
 });
+
+test('hello-world memory file: valid starting notes, short, with stable ids and no duplicates', async () => {
+  const fs = await import('node:fs');
+  const { parseMemoryFile, buildMemoryPrompt, MEMORY_LIMITS } = await import('../assets/ai-agent/core/memory.js');
+  const json = JSON.parse(fs.readFileSync(new URL('../examples/hello-world/ai-memory.json', import.meta.url), 'utf8'));
+  const notes = parseMemoryFile(json);
+  assert.equal(notes.length, json.memories.length, 'every entry is a usable note');
+  assert.deepEqual(notes.map((m) => m.id), json.memories.map((m) => m.id), 'ids are kept as written');
+  assert.equal(new Set(notes.map((m) => m.id)).size, notes.length);
+  assert.ok(notes.every((m) => m.source === 'app' && m.text.length <= MEMORY_LIMITS.chars && !/password|api key|token/i.test(m.text)));
+  assert.match(buildMemoryPrompt({ items: notes, enabled: true, canWrite: true }), /- \[m1\] Keyboard shortcuts in this editor: Ctrl\+S saves/);
+});

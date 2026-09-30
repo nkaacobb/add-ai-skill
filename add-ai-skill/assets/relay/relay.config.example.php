@@ -1,5 +1,5 @@
 <?php
-// ai-agent-drawer relay configuration (for relay.php 1.1+). Copy to relay.config.php and edit.
+// ai-agent-drawer relay configuration (for relay.php 1.1+; images need 1.3+). Copy to relay.config.php and edit.
 //
 // Where the relay looks for it, in order:
 //   1. the path in the AIA_RELAY_CONFIG environment/server variable (SetEnv, fastcgi_param, the process environment);
@@ -21,6 +21,8 @@ return [
         'provider' => 'openai',                 // lmstudio, ollama, custom, openai, anthropic, google, deepseek, openrouter
         'models'   => ['gpt-5-mini'],           // the first is the default; visitors cannot choose others
         // 'baseUrl' => 'http://10.0.0.5:8000',  // optional: a different address for this provider (e.g. a gateway)
+        // 'vision'  => true,                    // optional: whether this model sees images (the drawer's default for
+        //                                       // "This model can see images"; false hides screenshots for visitors)
     ],
 
     // Server-side keys. Environment/server variables win: OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY,
@@ -42,6 +44,8 @@ return [
         'maxBodyBytes'    => 524288,   // request size (the page content is part of it)
         'maxMessages'     => 40,       // conversation turns per request
         'maxOutputTokens' => 4096,     // reply tokens (larger requests are lowered to this)
+        'maxImages'       => 4,        // screenshots per request (0 = this relay passes no images)
+        'maxImageBytes'   => 1572864,  // one screenshot, as base64 text; images come on top of maxBodyBytes
     ],
 
     // Writable folder, outside the web root, for the rate-limit state (salted daily hashes; no addresses, no text).

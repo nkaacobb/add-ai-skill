@@ -3,16 +3,19 @@
 // is deployed beyond localhost. Reference servers: assets/relay/relay.php and assets/relay/relay.mjs.
 //
 // Contract
-//   POST {relayUrl}  JSON { action:'chat', provider, baseUrl, model, apiKey, system, messages:[{role,content}],
+//   POST {relayUrl}  JSON { action:'chat', provider, baseUrl, model, apiKey, system, messages:[{role,content,images?}],
 //                           maxTokens, temperature, reasoning, tools?, toolTurns?, turnId? }
 //     -> text/event-stream:  event: delta {text} | reasoning {text} | notice {message} | status {message}
 //                            | tool_call {id, name, arguments, signature?}
 //                            | error {message, code?, hints?} | done {usage?, provider?, model?}
 //   tools / toolTurns use the neutral formats of core/tools.js; the relay translates them for the provider. The tools
 //   themselves always run in the browser. `turnId` lets a public relay count one question per chain of tool steps.
+//   images (1.3): user messages and tool results may carry `images: [{ mime, data }]` (core/messages.js). A relay says
+//   how many it accepts per request in its GET reply (`images`; absent = a relay older than 1.3, which would drop
+//   them silently), so a request with images first asks the relay once and fails clearly when it cannot pass them.
 //     -> or JSON { text, reasoning?, usage? } | { error:{ message, code? } }
 //   POST {relayUrl}  JSON { action:'models', provider, baseUrl, apiKey } -> { ok, models:[{id,label,loaded}], error? }
-//   GET  {relayUrl}  -> { ok, relay, version, available, mode, providers, serverKeys, preset, reason? } (core/relay-probe.js)
+//   GET  {relayUrl}  -> { ok, relay, version, available, mode, providers, serverKeys, preset, images, reason? } (core/relay-probe.js)
 //   Refusals: HTTP 4xx/5xx JSON { ok:false, error:{ message, code, detail? } } — `code` is one of the drawer's error
 //   codes and `message` is written for the user; `detail` is only sent to requests from the relay's own computer.
 //   The streams start with an `: open` comment and carry `: keepalive` comments while the model is silent.
@@ -20,8 +23,26 @@
 // relay ignores it and uses only its configured preset.
 
 import { requestJson, requestStream, AiError } from '../core/transport.js';
-import { normalizeMessages } from '../core/messages.js';
+import { normalizeMessages, imageChars } from '../core/messages.js';
 import { parseArguments } from '../core/tools.js';
+import { probeRelay } from '../core/relay-probe.js';
+
+// Relay address -> how many images it accepts per request (asked once, when a request first carries images).
+const imageSupport = new Map();
+
+async function checkImages(cfg, count, fetch) {
+  if (!imageSupport.has(cfg.relayUrl)) {
+    const info = await probeRelay(cfg.relayUrl, { headers: relayHeaders(cfg), ...(fetch ? { fetch } : {}) });
+    if (!info.mode) return;                            // not reachable / not a relay: let the request report it
+    imageSupport.set(cfg.relayUrl, info.images);
+  }
+  const max = imageSupport.get(cfg.relayUrl);
+  if (!max) throw new AiError('refused', 'The relay cannot pass images to the model (it is older than version 1.3, or images are switched off in its configuration). Update the relay, or turn off "This model can see images" in Settings > Vision.');
+  if (count > max) throw new AiError('budget', `The relay accepts at most ${max} image${max === 1 ? '' : 's'} per request (this one has ${count}). Remove a screenshot, or start a new chat.`);
+}
+
+const countImages = (messages, toolTurns) => (Array.isArray(messages) ? messages : []).reduce((n, m) => n + (Array.isArray(m?.images) ? m.images.length : 0), 0)
+  + (Array.isArray(toolTurns) ? toolTurns : []).reduce((n, t) => n + (t.results || []).reduce((k, r) => k + (Array.isArray(r.images) ? r.images.length : 0), 0), 0);
 
 function relayHeaders(cfg) {
   const extra = typeof cfg.relayHeaders === 'function' ? cfg.relayHeaders() : cfg.relayHeaders;
@@ -59,9 +80,11 @@ export const relay = {
   async stream({ cfg, key, system, messages, maxTokens, temperature, signal, onEvent, fetch, tools, toolTurns, turnId }) {
     if (!cfg.relayUrl) throw new AiError('bad-endpoint', 'No relay address is configured (Settings > Model > Advanced).');
     const r = buildChat({ cfg, key, system, messages, maxTokens, temperature, tools, toolTurns, turnId });
+    const images = countImages(r.body.messages, toolTurns);
+    if (images) await checkImages(cfg, images, fetch);
     let usage;
     const toolCalls = [];
-    const res = await requestStream({ ...r, signal, timeoutMs: cfg.timeoutMs, secrets: [key], fetch, relay: true }, ({ event, data }) => {
+    const res = await requestStream({ ...r, signal, timeoutMs: cfg.timeoutMs, secrets: [key], fetch, relay: true, imageBytes: imageChars(r.body.messages, toolTurns) }, ({ event, data }) => {
       let json;
       try { json = JSON.parse(data); } catch { return; }
       if (event === 'delta') onEvent({ type: 'text', text: String(json.text ?? '') });

@@ -1,6 +1,8 @@
 // Settings modal: Model (provider, address, model, key, connection test, relay/fallback), Agent (system prompt and
 // generation options), Tools (which of the application's tools the agent may use, confirmations, export as the app's
-// tool config) and Context (a read-only view of exactly what the application's hooks give the agent).
+// tool config), Memory (the notes the agent keeps between conversations: add, edit, delete, export, import), Vision
+// (whether the model sees images, and who may take screenshots) and Context (a read-only view of exactly what the
+// application's hooks give the agent).
 // Edits are held in a draft and written on Save; "Load models" and "Test connection" use the draft, so a setup can
 // be tried before it is kept.
 
@@ -12,6 +14,8 @@ import { estimateTokens } from '../core/messages.js';
 import { ICONS } from './icons.js';
 import { esc, h, nf, uid, isolateKeys, copyText } from './dom.js';
 import { toolEnabled, toolAvailable, exportToolsConfig } from '../core/tools.js';
+import { exportMemoryFile, parseMemoryFile, memoryText, nextId, MEMORY_LIMITS } from '../core/memory.js';
+import { formatWhen } from './dom.js';
 
 /** Above this many estimated tokens (system prompt + snapshot + view state), Settings > Context warns for local models. */
 export const CONTEXT_WARN_TOKENS = 3000;
@@ -24,7 +28,8 @@ const STATE_TEXT = {
   off: 'Screen sharing is switched off (Agent tab).',
 };
 
-export function createSettingsPanel({ store, defaultPrompt, getContextInfo, relayHeaders, theme = 'auto', mount = document.body, title = 'AI agent', isolate = true, warnTokens = CONTEXT_WARN_TOKENS, relayInfo = () => null, getTools = () => [], pageId = () => null }) {
+export function createSettingsPanel({ store, defaultPrompt, getContextInfo, relayHeaders, theme = 'auto', mount = document.body, title = 'AI agent', isolate = true, warnTokens = CONTEXT_WARN_TOKENS, relayInfo = () => null, getTools = () => [], pageId = () => null, memory = null, vision = () => null }) {
+  const memLimits = memory?.limits || MEMORY_LIMITS;
   const id = uid('aia');
   const root = h(`
 <div class="aia-scope aia-modal" hidden${theme !== 'auto' ? ` data-aia-theme="${esc(theme)}"` : ''}>
@@ -41,6 +46,8 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
       <button type="button" role="tab" class="aia-tab" data-tab="model" id="${id}-t-model" aria-controls="${id}-p-model" aria-selected="true">Model</button>
       <button type="button" role="tab" class="aia-tab" data-tab="agent" id="${id}-t-agent" aria-controls="${id}-p-agent" aria-selected="false">Agent</button>
       <button type="button" role="tab" class="aia-tab" data-tab="tools" id="${id}-t-tools" aria-controls="${id}-p-tools" aria-selected="false" hidden>Tools</button>
+      <button type="button" role="tab" class="aia-tab" data-tab="memory" id="${id}-t-memory" aria-controls="${id}-p-memory" aria-selected="false"${memory ? '' : ' hidden'}>Memory</button>
+      <button type="button" role="tab" class="aia-tab" data-tab="vision" id="${id}-t-vision" aria-controls="${id}-p-vision" aria-selected="false"${vision() ? '' : ' hidden'}>Vision</button>
       <button type="button" role="tab" class="aia-tab" data-tab="context" id="${id}-t-context" aria-controls="${id}-p-context" aria-selected="false">Context</button>
     </div>
     <div class="aia-modal-body">
@@ -135,6 +142,42 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
         </div>
       </section>
 
+      <section class="aia-panel" data-panel="memory" role="tabpanel" id="${id}-p-memory" aria-labelledby="${id}-t-memory" hidden>
+        <div class="aia-section">
+          <label class="aia-check"><input type="checkbox" data-f="memoryEnabled"><span>Use memories: the notes below are part of every conversation</span></label>
+          <label class="aia-check"><input type="checkbox" data-f="memoryWrite"><span>Let the agent save a memory when I ask it to remember something</span></label>
+          <p class="aia-note">Tell the agent in the chat — "remember that I like the dark colour map" — or write memories here yourself: preferences, settings you liked, things about this application the agent did not know.</p>
+        </div>
+        <div class="aia-section">
+          <div class="aia-label-row"><span class="aia-label" data-f="memoryCount">Memories</span></div>
+          <div class="aia-memory-list" data-f="memoryList"></div>
+          <div class="aia-row"><input type="text" data-f="memoryNew" maxlength="${memLimits.chars}" autocomplete="off" placeholder="Add a memory…" aria-label="New memory"><button type="button" class="aia-btn" data-act="memoryAdd">Add</button></div>
+        </div>
+        <div class="aia-section">
+          <p class="aia-note">Memories are kept in this browser. To keep a copy, take them to another browser, or make them the application's starting memories for everyone, download the file and save it in the app as its memory file (for example <code>ai-memory.json</code>, loaded with the <code>memoryFile</code> option).</p>
+          <div class="aia-row aia-row-center"><button type="button" class="aia-btn" data-act="memoryExport">Download ai-memory.json</button><button type="button" class="aia-btn aia-btn-ghost" data-act="memoryCopy">Copy JSON</button><button type="button" class="aia-btn aia-btn-ghost" data-act="memoryImport">Import a file…</button><button type="button" class="aia-btn aia-btn-ghost" data-act="memoryClear">Delete all</button></div>
+          <input type="file" accept="application/json,.json" data-f="memoryFile" hidden>
+        </div>
+      </section>
+
+      <section class="aia-panel" data-panel="vision" role="tabpanel" id="${id}-p-vision" aria-labelledby="${id}-t-vision" hidden>
+        <div class="aia-section">
+          <label class="aia-check"><input type="checkbox" data-f="vision"><span>This model can see images (vision)</span></label>
+          <p class="aia-note" data-f="visionModel" hidden></p>
+          <p class="aia-note">Leave it on for models that accept images: most current cloud models, and local vision models. Switch it off for a text-only model: the camera button goes away and questions are answered from the page text alone.</p>
+        </div>
+        <div class="aia-section">
+          <label class="aia-check"><input type="checkbox" data-f="shotsManual"><span>Only take a screenshot when I press the camera button</span></label>
+          <p class="aia-note">Untick it to let the agent take a screenshot on its own whenever it thinks seeing the screen would help. While it is ticked the agent can still ask, and you get a button to allow it once or always. Either way, every screenshot shows in the chat as a thumbnail.</p>
+        </div>
+        <div class="aia-section">
+          <h3 class="aia-h3">How screenshots are taken</h3>
+          <p class="aia-note" data-f="visionHow"></p>
+          <div class="aia-row aia-row-center" data-f="visionLive" hidden><button type="button" class="aia-btn aia-btn-ghost" data-act="visionStop">Stop sharing this tab</button></div>
+          <p class="aia-note">A screenshot is sent to the model with your question, like the rest of the conversation. Saved chats keep only a small thumbnail of it.</p>
+        </div>
+      </section>
+
       <section class="aia-panel" data-panel="context" role="tabpanel" id="${id}-p-context" aria-labelledby="${id}-t-context" hidden>
         <div class="aia-section aia-ctx-status" data-f="ctxStatus"></div>
         <div class="aia-section aia-ctx-size" data-f="ctxSize"></div>
@@ -166,6 +209,9 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
   let returnFocus = null;
   let listTicket = 0;
   let toolChanges = {};     // tool on/off changes in this draft (only these are saved)
+  let memDraft = [];        // the memories as edited in this draft: [{ key, id, text, created, updated?, source }]
+  let memDirty = false;
+  let memSeq = 0;
 
   /* ------------------------------------------------------------ rendering */
 
@@ -264,7 +310,94 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     f('maxToolSteps').value = draft.maxToolSteps;
     toolChanges = {};
     renderTools();
+    f('memoryEnabled').checked = draft.memoryEnabled;
+    f('memoryWrite').checked = draft.memoryWrite;
+    f('vision').checked = draft.vision;
+    f('shotsManual').checked = !draft.screenshotAuto;
+    loadMemory();
+    renderVision();
     setStatus('');
+  }
+
+  /* ----------------------------------------------------------------- memory */
+
+  function loadMemory() {
+    memDraft = memory ? memory.list().map((m) => ({ ...m, key: `k${++memSeq}` })) : [];
+    memDirty = false;
+    renderMemory();
+  }
+
+  const sourceLabel = { agent: 'saved by the agent', app: 'from the application', user: 'written by you' };
+
+  function renderMemory() {
+    if (!memory) return;
+    const n = memDraft.length;
+    f('memoryCount').textContent = `Memories · ${n}${n >= memLimits.max ? ' (full)' : ''}`;
+    f('memoryList').innerHTML = n ? memDraft.map((m) => `
+      <div class="aia-memory-row" data-memory="${esc(m.key)}">
+        <textarea rows="2" maxlength="${memLimits.chars}" data-memory-text aria-label="Memory ${esc(m.id || 'new')}">${esc(m.text)}</textarea>
+        <div class="aia-memory-meta"><span>${esc([m.id, m.id ? sourceLabel[m.source] || '' : 'new', formatWhen(Date.parse(m.updated || m.created))].filter(Boolean).join(' · '))}</span>
+          <button type="button" class="aia-icon-btn" data-memory-delete title="Delete this memory" aria-label="Delete this memory">${ICONS.trash}</button></div>
+      </div>`).join('') : '<p class="aia-note">Nothing saved yet.</p>';
+    f('memoryNew').disabled = n >= memLimits.max;
+  }
+
+  function memoryChanged(message) {
+    memDirty = true;
+    setStatus(message || 'Memory changed — press Save to keep it.');
+  }
+
+  function addMemory(text, source = 'user') {
+    const t = memoryText(text, memLimits.chars);
+    if (!t || memDraft.length >= memLimits.max) return false;
+    if (memDraft.some((m) => m.text.trim().toLowerCase() === t.toLowerCase())) return false;
+    memDraft.push({ key: `k${++memSeq}`, id: '', text: t, created: new Date().toISOString(), source });
+    return true;
+  }
+
+  /** The draft as memories. New ones have no id yet: the store gives them one on Save; an export numbers them itself. */
+  function memoryItems(assignIds = false) {
+    const ids = [...memDraft.map((m) => m.id).filter(Boolean), ...(memory ? memory.list().map((m) => m.id) : [])];
+    return memDraft.filter((m) => memoryText(m.text, memLimits.chars)).map(({ key, ...m }) => {
+      if (!m.id && assignIds) { m.id = nextId(ids); ids.push(m.id); }
+      return { ...m, text: memoryText(m.text, memLimits.chars) };
+    });
+  }
+
+  const memoryJson = () => JSON.stringify(exportMemoryFile(memoryItems(true)), null, 2);
+
+  async function importMemory(file) {
+    let json;
+    try { json = JSON.parse(await file.text()); } catch { setStatus('That file is not valid JSON.', 'error'); return; }
+    const incoming = parseMemoryFile(json, { maxChars: memLimits.chars, max: memLimits.max, source: 'user' });
+    let added = 0;
+    for (const m of incoming) if (addMemory(m.text, m.source)) added += 1;
+    renderMemory();
+    if (added) memoryChanged(`Imported ${added} memor${added === 1 ? 'y' : 'ies'} — press Save to keep ${added === 1 ? 'it' : 'them'}.`);
+    else setStatus(incoming.length ? 'Those memories are already here.' : 'No memories found in that file.', incoming.length ? '' : 'error');
+  }
+
+  /* ----------------------------------------------------------------- vision */
+
+  function renderVision() {
+    const v = vision();
+    root.querySelector('[data-tab="vision"]').hidden = !v;
+    if (!v) return;
+    f('visionHow').textContent = v.method === 'app'
+      ? 'This application provides the picture itself (its own view of what you are looking at), so nothing has to be shared and the browser does not ask.'
+      : v.method === 'screen'
+        ? 'With your browser\'s screen sharing: the first time, the browser asks you to share this tab. When only you take screenshots, sharing stops after each one. When the agent may look on its own, the tab stays shared (the browser shows that) until you stop it or reload the page.'
+        : 'Not available here: this browser cannot capture the page (that needs a desktop browser and an https or localhost address), and the application provides no picture of its own.';
+    f('visionLive').hidden = !v.live;
+    // What the model server itself says about the model in use, when it says anything (LM Studio does).
+    const known = typeof v.modelSees === 'boolean' && v.model && formProvider === store.get().provider;
+    f('visionModel').hidden = !known;
+    f('visionModel').classList.toggle('aia-warn-note', !!known && !v.modelSees && f('vision').checked);
+    if (known) f('visionModel').textContent = v.modelSees
+      ? `The model server says ${v.model} sees images.`
+      : `The model server says ${v.model} is text-only: screenshots would fail or be ignored. Switch this off, or load a vision model.`;
+    f('vision').disabled = v.method === 'none';
+    f('shotsManual').disabled = v.method === 'none';
   }
 
   /* ------------------------------------------------------------------ tools */
@@ -334,6 +467,10 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
       toolMode: f('toolMode').value,
       maxToolSteps: Math.round(num('maxToolSteps') ?? 0),
       toolStates: { ...toolChanges },
+      memoryEnabled: f('memoryEnabled').checked,
+      memoryWrite: f('memoryWrite').checked,
+      vision: f('vision').checked,
+      screenshotAuto: !f('shotsManual').checked,
     };
     // An empty address means "the provider default". An empty model is kept: it is a real choice ("whatever is
     // loaded" for LM Studio) and must override a model the application set as its default.
@@ -398,6 +535,12 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
       if (key !== store.keys.get(pid)) store.keys.set(pid, key);
     }
     if (!store.save(next)) { setStatus('This browser refused to save (storage full or disabled).', 'error'); return; }
+    if (memory && memDirty) {
+      const items = memoryItems();
+      memDirty = false;
+      memory.replaceAll(items);
+      loadMemory();
+    }
     draft = store.get();
     setStatus('Saved.', 'ok');
     clearTimeout(closeTimer);
@@ -473,6 +616,8 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     for (const tab of root.querySelectorAll('[data-tab]')) tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
     for (const panel of root.querySelectorAll('[data-panel]')) panel.hidden = panel.dataset.panel !== name;
     if (name === 'tools') renderTools();
+    if (name === 'memory') renderMemory();
+    if (name === 'vision') renderVision();
     root.querySelector('[data-f="status"]').hidden = name === 'context';
     act('save').hidden = name === 'context';
     act('resetAll').hidden = name === 'context';
@@ -522,15 +667,26 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     else if (a === 'toolsRead') setAllTools((t) => t.effect === 'read');
     else if (a === 'copyTools') { copyText(toolsJson()); setStatus('Tool config copied. Save it in the app as its tool config file.', 'ok'); }
     else if (a === 'exportTools') {
-      const url = URL.createObjectURL(new Blob([toolsJson()], { type: 'application/json' }));
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'ai-tools.json';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      download('ai-tools.json', toolsJson());
       setStatus('Downloaded ai-tools.json. Save it in the app and load it with the toolsConfig option.', 'ok');
+    }
+    else if (a === 'memoryAdd') {
+      if (addMemory(f('memoryNew').value)) { f('memoryNew').value = ''; renderMemory(); memoryChanged(); } else if (f('memoryNew').value.trim()) setStatus(memDraft.length >= memLimits.max ? `Memory is full (${memLimits.max}). Delete one first.` : 'That memory is already there.', 'error');
+      f('memoryNew').focus();
+    }
+    else if (a === 'memoryClear') { if (memDraft.length) { memDraft = []; renderMemory(); memoryChanged('All memories removed — press Save to confirm, or close to keep them.'); } }
+    else if (a === 'memoryCopy') { copyText(memoryJson()); setStatus('Memory copied as JSON.', 'ok'); }
+    else if (a === 'memoryExport') {
+      download('ai-memory.json', memoryJson());
+      setStatus('Downloaded ai-memory.json. Save it in the app and load it with the memoryFile option.', 'ok');
+    }
+    else if (a === 'memoryImport') f('memoryFile').click();
+    else if (a === 'visionStop') { vision()?.stop(); renderVision(); }
+    else if (t.closest('[data-memory-delete]')) {
+      const key = t.closest('[data-memory]').dataset.memory;
+      memDraft = memDraft.filter((m) => m.key !== key);
+      renderMemory();
+      memoryChanged();
     }
     else if (a === 'revealKey') {
       const showing = f('apiKey').type === 'text';
@@ -538,6 +694,30 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
       act('revealKey').textContent = showing ? 'Show' : 'Hide';
       act('revealKey').setAttribute('aria-pressed', String(!showing));
     }
+  });
+
+  function download(name, text) {
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  f('memoryList').addEventListener('input', (e) => {
+    const row = e.target.closest('[data-memory]');
+    const m = row && memDraft.find((x) => x.key === row.dataset.memory);
+    if (!m || !e.target.matches('[data-memory-text]')) return;
+    m.text = e.target.value;
+    memoryChanged();
+  });
+  f('memoryFile').addEventListener('change', () => {
+    const file = f('memoryFile').files?.[0];
+    f('memoryFile').value = '';
+    if (file) importMemory(file);
   });
 
   f('provider').addEventListener('change', () => {
@@ -548,6 +728,7 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
   });
 
   f('baseUrl').addEventListener('input', syncProviderText);
+  f('vision').addEventListener('change', renderVision);
 
   f('toolList').addEventListener('change', (e) => {
     const box = e.target.closest('[data-tool]');
@@ -563,6 +744,7 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
 
   root.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); return; }
+    if (e.key === 'Enter' && e.target === f('memoryNew')) { e.preventDefault(); act('memoryAdd').click(); return; }
     if (e.key === 'Enter' && e.target.tagName === 'INPUT' && !['checkbox', 'radio'].includes(e.target.type)) {
       e.preventDefault();
       save();
@@ -589,6 +771,9 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     isOpen,
     refreshContext: () => { if (isOpen() && currentTab === 'context') renderContext(); },
     refreshTools: () => { if (isOpen() && currentTab === 'tools') renderTools(); else root.querySelector('[data-tab="tools"]').hidden = !getTools().length; },
+    /** The memories changed outside this panel (the agent saved one, the app's file arrived): show them. */
+    refreshMemory: () => { if (isOpen() && !memDirty) loadMemory(); },
+    refreshVision: () => { if (isOpen()) renderVision(); },
     destroy: () => { close(); detachKeys(); root.remove(); },
   };
 }
