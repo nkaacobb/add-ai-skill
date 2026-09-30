@@ -1,8 +1,27 @@
 # Changelog
 
-All notable changes to the add-ai-skill skill (it builds the "AI agent drawer" into apps). The runtime (`assets/ai-agent/`), the relays (`assets/relay/`) and
-the skill instructions are versioned together: `VERSION` in `ai-agent.js`, `AIA_RELAY_VERSION` / `RELAY_VERSION` in
-the relays, and `package.json`.
+All notable changes to the add-ai-skill skill (it builds the "AI agent drawer" into apps). The skill's version is in
+`package.json`; the runtime (`VERSION` in `assets/ai-agent/ai-agent.js`) and the relays (`AIA_RELAY_VERSION` /
+`RELAY_VERSION`) carry their own, which only change when their code does. `scripts/release-hashes.json` fingerprints
+every released runtime and relay.
+
+## 1.3.0 — upgrade mode (runtime and relays unchanged: 1.2.0)
+
+Running the skill on an app that already has the agent now upgrades it instead of building a second one.
+
+- **Step 0** in SKILL.md: run `scripts/detect.mjs` first. It finds the runtime copy and its version, says whether the
+  copy is unchanged since its release (fingerprints for 1.0.0, 1.1.0 and 1.2.0), finds relays (with 1.0-style edits:
+  constants, keys or auth code inside the file — never printing keys), relay config files (names only), every
+  `createAiAgent()` call with its `appId` and options, the integration record, tool configs, and app code that looks
+  like a workaround a newer runtime covers. It ends with BUILD, UPGRADE or CURRENT.
+- **`references/upgrading.md`**: the upgrade workflow — read the record and the CHANGELOG since the installed
+  version, propose the upgrade, replace the runtime and relay wholesale (migrating 1.0 relay constants to
+  `relay.config.php`), remove redundant workarounds (table), offer the new features that fit (tools first), verify,
+  and record. Keeps the `appId`, hooks, prompts and customisations.
+- **`ai-agent.integration.json`**: every integration and upgrade leaves a record in the app (versions, files,
+  features, plans, declined features), so the next run knows exactly what is there.
+- `scripts/release-hashes.mjs` records the fingerprints of a release (maintainers: run it for every release).
+- Tests: `tests/detect.test.mjs`.
 
 ## 1.2.0 — the agent can act: tools
 

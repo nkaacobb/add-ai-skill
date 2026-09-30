@@ -30,6 +30,17 @@ This copies `add-ai-skill/` to:
 copies (it also removes copies installed under the old name `ai-agent-drawer`). `-Uninstall` removes them;
 `-Targets claude` installs for one tool only.
 
+## Apps that already have the agent
+
+Run the skill again in the app — no special prompt needed. Its first step (`scripts/detect.mjs`) finds the existing
+integration and its version, and the skill **upgrades** it (`references/upgrading.md`): new runtime and relay, config
+migrated, workarounds removed, new features offered (such as tools), a record written (`ai-agent.integration.json`) —
+never a second agent. You can narrow it: "/add-ai-skill just update the runtime" or "/add-ai-skill add tools".
+
+```powershell
+node add-ai-skill/scripts/detect.mjs D:\path\to\app      # see what an app has, without changing anything
+```
+
 ## Use it in another app
 
 Open the app and ask your agent:
@@ -94,7 +105,8 @@ add-ai-skill/
   assets/relay/            relay.php (PHP 8.1+) · relay.mjs (Node) · relay.config.example.php — copied unchanged, configured by a file
   examples/hello-world/    the demo: app.js (the editor) · ai-agent-setup.js (the integration) · content.js (pure, tested)
                            · ai-tools.js (8 tools) · ai-tools.json (which are on)
-  references/              api · tools · context-sync · frameworks · providers · checklist · architecture
+  references/              upgrading · api · tools · context-sync · frameworks · providers · checklist · architecture
+  scripts/detect.mjs       run first on any app: is the agent there, which version, what to upgrade
   scripts/verify.mjs       checks an integration in headless Edge/Chrome (scripts/lib/cdp.mjs is its driver)
   tests/                   node --test: runtime · relays (Node + PHP) · real browser · example
   package.json             npm test · npm run demo · npm run verify
@@ -120,9 +132,11 @@ When an integration needed a workaround, fold the lesson back in here so the nex
 2. Keep changes additive and generic (no app names, domains or server paths); anything that could surprise an
    existing app is opt-in or has a safe default. No dependencies, no build step.
 3. Update `ai-agent.d.ts`, `references/api.md` and other affected references, `SKILL.md` if the workflow changes,
-   Hello World if it demonstrates the feature, and `CHANGELOG.md`; bump the version (`VERSION` in `ai-agent.js`, the
-   relay versions, `package.json`).
-4. Run the tests, try Hello World, commit, and re-run the installer.
+   Hello World if it demonstrates the feature, and `CHANGELOG.md` (with **Upgrading** notes, and any new
+   workaround the upgrade should remove in `references/upgrading.md`); bump the version (`VERSION` in `ai-agent.js`
+   and the relay versions when their code changed, `package.json` always).
+4. When the runtime or a relay changed: `node scripts/release-hashes.mjs` (the tests fail until you do).
+5. Run the tests, try Hello World, commit, and re-run the installer.
 
 Apps that already have a copy of `ai-agent/` take an update by copying the folder over theirs (see the upgrade notes
 in `CHANGELOG.md`); integrations only use the options and methods, so the copy can be replaced wholesale.

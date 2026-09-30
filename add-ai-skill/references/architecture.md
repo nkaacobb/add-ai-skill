@@ -47,9 +47,11 @@ Outside the runtime:
 | Path | What it is |
 | --- | --- |
 | `assets/relay/relay.php`, `relay.mjs`, `relay.config.example.php` | The relays (same contract, modes and config keys) and the documented config. |
+| `scripts/detect.mjs` | Run first on any app: is the agent there, which version, are the copies unchanged, which workarounds are now redundant. |
+| `scripts/release-hashes.mjs`, `scripts/release-hashes.json` | Fingerprints of every released runtime and relay, so `detect.mjs` can tell unchanged copies from edited ones. |
 | `scripts/verify.mjs` | Drives headless Edge/Chrome through an integration and reports pass/fail per check. |
 | `scripts/lib/cdp.mjs` | Zero-dependency DevTools-protocol driver (Node 22+ global WebSocket), shared by `verify.mjs` and the browser tests. |
-| `tests/` | `runtime` (pure modules), `relay` (both relays + fake upstream), `browser` (real browser), `example` (Hello World content). |
+| `tests/` | `runtime` (pure modules), `relay` (both relays + fake upstream), `browser` (real browser), `example` (Hello World content and tools), `detect` (upgrade detection). |
 
 Everything under `core/` and `adapters/` is DOM-free, which is why the Node relay can import it and the unit tests can
 run without a browser. What needs a browser (`ui/`) is covered by `tests/browser.test.mjs`.

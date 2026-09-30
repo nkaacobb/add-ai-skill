@@ -14,6 +14,10 @@ lists everything. Exit code 1 when a check fails. It does not replace looking at
 
 ## Before you say it is done
 
+- [ ] `scripts/detect.mjs` was run first: an app that already had the agent was **upgraded** (`upgrading.md`), not
+      given a second one; the `appId` did not change; old saved chats and settings still load.
+- [ ] `ai-agent.integration.json` written or updated at the app's root (versions, files, features, plans, declined
+      features — no secrets).
 - [ ] `ai-agent/` copied unchanged; `ai-agent.css` loaded once; the agent created once, client-side.
 - [ ] The integration module is loaded with `import()` and a `.catch()`: the app works if it fails to load.
 - [ ] `appId` is unique to this application.
@@ -94,7 +98,7 @@ A quick console check: `agent.getContextStatus()`, `await agent.systemPrompt()`,
 | Relay: "unable to get local issuer certificate" (cURL errno 60) | Old CA bundle (XAMPP's is from 2022) or TLS interception by antivirus/proxy. Current `cacert.pem` in `php.ini`, or `'caBundle' => 'native'` in the relay config. |
 | Every visitor hits the rate limit at once | The relay sees one address for everyone (CDN/load balancer). Restore the client address (`real_ip` in Nginx, `mod_remoteip` in Apache). |
 | Host styles leak into the drawer | Rare; all runtime classes are `aia-` prefixed. Raise specificity in the host rule or add a reset for `.aia-scope` descendants. |
-| Two drawers appear | `createAiAgent` called twice (React StrictMode, HMR). Use a module-level singleton (`getAgent()`). |
+| Two drawers appear | `createAiAgent` called twice (React StrictMode, HMR), or the skill was run again on an app that already had the agent and built a second one. Keep one integration (`scripts/detect.mjs` lists every `createAiAgent()` call) and a module-level singleton (`getAgent()`). |
 | Settings do not stick | Browser storage blocked (private mode / sandboxed iframe): the runtime falls back to memory for the session. |
 
 ## Runtime tests
@@ -111,3 +115,5 @@ From the skill folder: `node --test` (or `npm test`). No model needed.
   isolation, dialog docking, the layout warning, theme overrides, resume, `setControlValue`, the probe on a static
   server, the context-size warning.
 - `tests/example.test.mjs` — the Hello World content builders and tools (the tests every integration should have).
+- `tests/detect.test.mjs` — `scripts/detect.mjs` on fixture apps (fresh, current, older/edited runtime, 1.0 relay
+  edits without printing keys, workaround hints, the record) and that the release fingerprints are up to date.

@@ -1,6 +1,6 @@
 ---
 name: add-ai-skill
-description: Build a screen-aware AI agent into any web application - a chat drawer that slides out from the right, sees what the user sees (application context + page context + live screen content that is re-sent only when its hash changes, with a visible in-sync/changed flag), can act in the app through tools discovered from its code (with confirmations and per-tool on/off settings), streams replies as rich Markdown, keeps saved chats, and has a settings panel for any LLM (LM Studio by default, Ollama, OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, any OpenAI-compatible server, or a PHP/Node relay with a production-ready public mode) with an editable system prompt. Use when the user asks to add, build or integrate an AI agent, AI assistant, chatbot, copilot panel, or "chat with what is on screen" into an app, or mentions the add-ai-skill skill or the AI agent drawer pattern. Vanilla ES modules with no build step and no dependencies; works with plain HTML, PHP, React, Vue, Svelte, Angular and Next.js.
+description: Build a screen-aware AI agent into any web application - a chat drawer that slides out from the right, sees what the user sees (application context + page context + live screen content that is re-sent only when its hash changes, with a visible in-sync/changed flag), can act in the app through tools discovered from its code (with confirmations and per-tool on/off settings), streams replies as rich Markdown, keeps saved chats, and has a settings panel for any LLM (LM Studio by default, Ollama, OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, any OpenAI-compatible server, or a PHP/Node relay with a production-ready public mode) with an editable system prompt. Use when the user asks to add, build or integrate an AI agent, AI assistant, chatbot, copilot panel, or "chat with what is on screen" into an app, to update or upgrade an app that already has this agent (it detects the existing integration and upgrades it instead of building a second one), or mentions the add-ai-skill skill or the AI agent drawer pattern. Vanilla ES modules with no build step and no dependencies; works with plain HTML, PHP, React, Vue, Svelte, Angular and Next.js.
 ---
 
 # add-ai-skill — the AI Agent Drawer
@@ -28,11 +28,31 @@ Everything lives in this skill folder (the folder that contains this `SKILL.md`)
 | `assets/relay/relay.config.example.php` | Every relay setting, documented. |
 | `assets/relay/relay.mjs` | Node relay with the same contract, modes and config (+ optional static server; zero dependencies). |
 | `examples/hello-world/` | **Reference integration**: a text editor (`app.js`) that loads its AI integration (`ai-agent-setup.js`) with `import()`, pure content builders (`content.js`, unit-tested), eight tools over the editor's own functions (`ai-tools.js`) with their default selection (`ai-tools.json`), a status-bar sync flag, and code actions. Read `ai-agent-setup.js` and `ai-tools.js` before integrating. |
-| `references/` | `api.md` (every option, method and host hook), `tools.md` (**discovering and building the app's tools**, settings, `ai-tools.json`), `context-sync.md` (the protocol, real-time apps, content builders), `frameworks.md` (stack recipes, safe loading, keyboard shortcuts, modal dialogs, layout, change signals, small-model code actions), `providers.md` (LLMs, context size, keys, CORS, relays, Nginx/Apache deployment), `checklist.md` (verification + troubleshooting), `architecture.md`. |
-| `scripts/verify.mjs` | **Automated verification** in headless Edge/Chrome (Node 22+): console errors, hotkey, flag, typing, context size, layout at 3 widths with screenshots, and the read → change → re-read → "Page unchanged" loop. |
+| `references/` | `upgrading.md` (**apps that already have the agent**), `api.md` (every option, method and host hook), `tools.md` (**discovering and building the app's tools**, settings, `ai-tools.json`), `context-sync.md` (the protocol, real-time apps, content builders), `frameworks.md` (stack recipes, safe loading, keyboard shortcuts, modal dialogs, layout, change signals, small-model code actions), `providers.md` (LLMs, context size, keys, CORS, relays, Nginx/Apache deployment), `checklist.md` (verification + troubleshooting), `architecture.md`. |
+| `scripts/detect.mjs` | **Run first**: is the agent already in this app, at which version, are its copies unchanged, which workarounds a newer runtime covers. Read-only. |
+| `scripts/verify.mjs` | **Automated verification** in headless Edge/Chrome (Node 22+): console errors, hotkey, flag, typing, context size, tools, layout at 3 widths with screenshots, and the read → change → re-read → "Page unchanged" loop. |
+| `CHANGELOG.md` | What each version added, with **Upgrading** notes (read them when upgrading an app). |
 | `tests/` | `node --test` suites: runtime, relays (Node + PHP, fake upstream), real-browser behaviour, the example's content builders. Run them if you ever change the runtime. |
 
 ## Workflow
+
+### 0. Is the agent already in this app?
+
+Always check first — the user may not say that the app already has it:
+
+```bash
+node <skill>/scripts/detect.mjs <app-root>
+```
+
+- **No agent found** → the full workflow below (steps 1–12).
+- **UPGRADE** (an older runtime or relay) or **CURRENT** → **do not build a second agent**. Follow
+  `references/upgrading.md`: replace the runtime and relay (they were copied unchanged), migrate the relay config,
+  remove workarounds the new version covers, offer the new features that fit (for example tools), verify, and update
+  the integration record. Reuse steps below only as that guide says (e.g. steps 1–2 and 8 for a tool plan).
+- The user's words set the scope ("just update the runtime", "add tools"); without one, propose the full upgrade.
+
+Without Node, search the app for `ai-agent.js` containing `export const VERSION`, for `createAiAgent(`, and for
+`ai-agent.integration.json` (the record every integration leaves).
 
 ### 1. Survey the app (read-only)
 
@@ -218,14 +238,18 @@ node <skill>/scripts/verify.mjs http://127.0.0.1:8787/ --change "<js that change
 
 If no LLM is reachable, say so and still verify the rest. Full checklist and fixes: `references/checklist.md`.
 
-### 12. Report
+### 12. Record and report
+
+Write `ai-agent.integration.json` at the app's root (format: `references/upgrading.md`): skill and runtime versions,
+`appId`, the files you added, the features in use, the context and tool plans in brief, and anything the user declined.
+It is how the next run of this skill knows the agent is there and what to upgrade. No secrets in it.
 
 Tell the user: which files you added/changed, the context plan and the tool plan per page (which tools are on by default), how to open it (button/`Ctrl+I`), how to configure the model (gear icon → Model; LM Studio needs its server started with CORS enabled and ≥ 8k context), the relay setup for production, and anything you could not verify.
 
 ## Rules
 
 - Copy the runtime and the relays unchanged; configure them through options and config files. Do not fork or restyle their internals — theme with `--aia-*` CSS variables on `.aia-scope` and the host hooks (`html.aia-drawer-open`, `--aia-push-width`).
-- One agent instance per app, created client-side, loaded so a failure cannot break the app. `appId` unique per app.
+- One agent instance per app, created client-side, loaded so a failure cannot break the app. `appId` unique per app, and never changed afterwards (it namespaces users' settings and saved chats). An app that already has the agent is upgraded, not rebuilt (step 0).
 - Context is **what the user sees**, not the whole database, and never secrets.
 - Keep content deterministic, built by a tested pure function; volatile state goes in `view`.
 - The agent acts only through tools that wrap the app's own functions, with the user's own permissions; changes are confirmed by default, destructive tools start off, and the app's own confirmations and server-side checks stay in place.
