@@ -1,4 +1,4 @@
-# add-ai-skill — the AI Agent Drawer pattern, as a reusable skill
+# Add-AI-Skill - The AI Agent Drawer pattern, as a reusable skill
 
 This repository packages an AI agent pattern so any app can have it, and so Claude Code, Codex and GitHub Copilot can
 build it into an app on request:
