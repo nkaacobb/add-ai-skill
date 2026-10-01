@@ -593,7 +593,7 @@ test('openai-chat: tools out, streamed tool-call pieces in, the exchange back in
   const fetch = sseFetch([d({ content: 'Let me look.' }), d({ tool_calls: [{ index: 0, id: 'call_9', function: { name: 'filter_orders', arguments: '{"sta' } }] }), d({ tool_calls: [{ index: 0, function: { arguments: 'tus":"open"}' } }] }), 'data: [DONE]\n\n']);
   const events = [];
   const res = await openai.openaiChat.stream({ cfg: { baseUrl: 'http://x', model: 'm' }, messages: [{ role: 'user', content: 'q' }], tools: SPECS, onEvent: (e) => events.push(e), fetch });
-  assert.deepEqual(res.toolCalls, [{ id: 'call_9', name: 'filter_orders', arguments: { status: 'open' } }]);
+  assert.deepEqual(res.toolCalls, [{ id: 'call_9', name: 'filter_orders', arguments: { status: 'open' }, raw: '{"status":"open"}' }]);
   assert.deepEqual(events, [{ type: 'text', text: 'Let me look.' }]);
 });
 
@@ -611,7 +611,7 @@ test('anthropic and gemini: tool formats both ways', async () => {
     ev({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '"open"}' } }),
   ]);
   const ar = await anthropic.anthropic.stream({ cfg: { baseUrl: 'https://api.anthropic.com', model: 'm' }, messages: [{ role: 'user', content: 'q' }], tools: SPECS, onEvent: () => {}, fetch: aFetch });
-  assert.deepEqual(ar.toolCalls, [{ id: 'toolu_1', name: 'filter_orders', arguments: { status: 'open' } }]);
+  assert.deepEqual(ar.toolCalls, [{ id: 'toolu_1', name: 'filter_orders', arguments: { status: 'open' }, raw: '{"status":"open"}' }]);
 
   const g = gemini.buildChat({ cfg: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gm' }, messages: [{ role: 'user', content: 'q' }], tools: SPECS, toolTurns: TURNS });
   assert.deepEqual(g.body.tools, [{ functionDeclarations: [{ name: 'filter_orders', description: 'Filter.', parameters: SPECS[0].parameters }] }]);

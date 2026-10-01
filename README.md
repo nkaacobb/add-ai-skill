@@ -76,7 +76,8 @@ Then try it: click **Ask AI** (or `Ctrl+I`) and ask "Proofread this" — your me
 N chars · hash** and the status bar flag turns green. Edit the text: the flag turns amber. Ask again: the page is
 re-read; ask once more without editing: **Page unchanged**. Ask "make the text bigger": the agent answers with an
 editor-settings block and an **Apply editor settings** button. Ask "fix the spelling mistakes": the agent calls its
-`replace_text` tool and asks you to confirm before the document changes. Ask "rename the file to notes.txt": that
+`replace_text` tool and asks you to confirm before the document changes; click the tool's row afterwards and it rolls
+down to show the arguments and what went back to the model. Ask "rename the file to notes.txt": that
 tool is off by default, so it offers a **Turn on** button first. **Settings → Tools** has a checkbox per tool. Click
 the flag to see exactly what the AI receives (Settings → Context, including the estimated token size).
 

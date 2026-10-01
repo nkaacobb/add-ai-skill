@@ -1,6 +1,7 @@
 // Runtime behaviour that only a real browser can show: keyboard isolation from host shortcuts, native modal
 // dialogs, the push-layout warning, theme overrides, resume, form controls, the relay probe, the context size, the
-// tool loop, memory, and screenshots (an app hook with a WebGL canvas, and the browser's own screen capture).
+// tool loop, tool rows (a cut-off call rolled down and copied), memory, and screenshots (an app hook with a WebGL
+// canvas, and the browser's own screen capture).
 // Runs headless Edge/Chrome/Chromium over the DevTools protocol (scripts/lib/cdp.mjs, Node 22+). Skipped when no
 // browser is installed; set AIA_BROWSER to a browser executable to choose one, or AIA_SKIP_BROWSER=1 to skip.
 
@@ -341,6 +342,7 @@ test('tools: the drawer runs the model\'s tool calls, asks before changes, and o
     const r = await page.evaluate(() => ({
       title: document.getElementById('title').textContent,
       chips: [...document.querySelectorAll('.aia-drawer .aia-tool')].map((c) => [c.querySelector('.aia-tool-call').textContent, c.dataset.status]),
+      rollDown: [...document.querySelectorAll('.aia-drawer .aia-tool .aia-tool-line')].map((l) => !l.disabled),
       answer: [...document.querySelectorAll('.aia-drawer .aia-msg.aia-assistant .aia-md')].pop().textContent,
       wipeOn: agent.settings.get().toolStates.wipe,
       saved: JSON.parse(localStorage.getItem('tools-e2e.ai.chats'))[0].messages.find((m) => m.role === 'assistant').actions.map((a) => [a.call, a.status]),
@@ -348,6 +350,7 @@ test('tools: the drawer runs the model\'s tool calls, asks before changes, and o
     }));
     assert.equal(r.title, 'Hello tools');
     assert.deepEqual(r.chips, [['count_items()', 'ok'], ['set_title(title: "Hello tools")', 'ok'], ['wipe()', 'ok']]);
+    assert.deepEqual(r.rollDown, [true, true, true], 'every finished row rolls down, the "Turn on" one too');
     assert.match(r.answer, /Renaming it now\.[\s\S]*All done/);
     assert.equal(r.wipeOn, true, 'turning a tool on from the chat is saved like the Tools tab');
     assert.deepEqual(r.saved, [['count_items()', 'ok'], ['set_title(title: "Hello tools")', 'ok'], ['turn on wipe', 'ok']]);
@@ -405,6 +408,89 @@ test('tools: the drawer runs the model\'s tool calls, asks before changes, and o
     assert.match(b.messages.at(-1).content, /<tool_results>\nset_title: Done\.\n<\/tool_results>/);
   } finally {
     await textModel.close();
+  }
+});
+
+test('tool rows: a cut-off call is reported, rolls down to show what was sent, copies, and survives a saved chat', { skip, timeout: 90000 }, async () => {
+  const { startFakeUpstream } = await import('./fixtures/fake-upstream.mjs');
+  // What LM Studio streamed when the reply ran out of tokens part-way through the notes (78 characters).
+  const CUT = '{"track": "Concert Grand Piano", "notes": "[[0,\\"C4\\",0.5,0.8],[0.5,\\"E4\\",0.5';
+  const upstream = await startFakeUpstream({
+    cors: true,
+    respond: (body, n) => [
+      { toolCalls: [{ id: 'c1', name: 'write_notes', rawArguments: CUT }], finish: 'length' },
+      { toolCalls: [{ id: 'c2', name: 'write_notes', arguments: { track: 'seq', notes: '[[0,"C4",1]]' } }] },
+      { text: 'Wrote it in two smaller steps.' },
+    ][n - 1] || { text: 'Extra.' },
+  });
+  try {
+    await fresh();
+    await page.evaluate(async (url) => {
+      window.copied = [];
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (t) => { window.copied.push(t); } } });
+      window.agent = M.createAiAgent({
+        appId: 'rows-e2e', launcher: false, devWarnings: false, memory: false, screenshots: false,
+        defaults: { provider: 'custom', confirmWrites: false, profiles: { custom: { baseUrl: url, model: 'fake-model' } } },
+        page: { id: 'song', title: 'Song', content: () => 'Track "Concert Grand Piano" [seq]' },
+        tools: [{
+          name: 'write_notes', description: 'Write notes.', effect: 'write', enabled: true,
+          parameters: { track: { type: 'string', required: true, maxLength: 80 }, notes: { type: 'string', required: true, maxLength: 12000 } },
+          run: ({ notes }) => `Wrote ${JSON.parse(notes).length} note.`,
+        }],
+      });
+      await agent.ask('Write a piano piece.');
+    }, upstream.url);
+
+    const rows = await page.evaluate(() => [...document.querySelectorAll('.aia-drawer .aia-tool')].map((c) => ({
+      call: c.querySelector('.aia-tool-call').textContent,
+      status: c.dataset.status,
+      tip: c.querySelector('.aia-tool-state').title,
+      canOpen: !c.querySelector('.aia-tool-line').disabled,
+      open: !c.querySelector('.aia-tool-detail').hidden,
+    })));
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows.map((r) => [r.call, r.status, r.canOpen, r.open]), [['write_notes()', 'error', true, false], ['write_notes(track: "seq", notes: "[[0,\\"C4\\",1]]")', 'ok', true, false]]);
+    assert.match(rows[0].tip, /^Cut off: the reply reached Max reply tokens \(4,096 tokens\) after 78 characters of arguments/);
+
+    // What the model was told, and what went back to the provider for the cut call (no half-written arguments).
+    const second = upstream.chats()[1].body;
+    const assistant = second.messages.find((m) => m.role === 'assistant' && m.tool_calls);
+    assert.equal(assistant.tool_calls[0].function.arguments, '{}');
+    assert.match(second.messages.find((m) => m.role === 'tool').content, /^Not run: your reply reached its length limit \(4,096 tokens\)/);
+
+    // Roll the failed row down: the problem, the arguments, the raw text the model sent, and the result.
+    await page.click('.aia-drawer .aia-tool:first-child .aia-tool-line');
+    const open = await page.evaluate(() => {
+      const c = document.querySelector('.aia-drawer .aia-tool');
+      return { expanded: c.querySelector('.aia-tool-line').getAttribute('aria-expanded'), labels: [...c.querySelectorAll('.aia-tool-part-label')].map((l) => l.textContent), pres: [...c.querySelectorAll('.aia-tool-part pre')].map((p) => p.textContent), problem: c.querySelector('.aia-tool-problem')?.textContent };
+    });
+    assert.equal(open.expanded, 'true');
+    assert.deepEqual(open.labels, ['Arguments the tool received', 'As the model sent them · 78 chars', 'Error returned to the model']);
+    assert.equal(open.pres[1], CUT);
+    assert.match(open.problem, /^Cut off:/);
+    await page.click('.aia-drawer .aia-tool:first-child [data-aia-tool-copy]');
+    await page.click('.aia-drawer .aia-tool:first-child .aia-tool-line');
+    assert.equal(await page.evaluate(() => document.querySelector('.aia-drawer .aia-tool .aia-tool-detail').hidden), true, 'rolls back up');
+
+    // "Copy tool log" on the reply: every row.
+    await page.click('.aia-drawer [data-aia-reply-action="copy-tools"]');
+    const copied = await page.evaluate(() => window.copied);
+    assert.equal(copied.length, 2);
+    assert.ok(copied[0].startsWith('Write notes · write_notes · Failed\n\nProblem: Cut off:') && copied[0].includes(CUT), copied[0]);
+    assert.ok(copied[1].includes('----------------') && copied[1].includes('Returned to the model:\nWrote 1 note.'), copied[1]);
+
+    // The saved chat keeps the detail: reopen it and roll the row down again.
+    await page.evaluate(() => document.querySelector('[data-act="new"]').click());
+    await page.evaluate(() => document.querySelector('[data-act="library"]').click());
+    await page.waitFor(() => !!document.querySelector('[data-chat-open]'), { timeoutMs: 5000 });
+    await page.evaluate(() => document.querySelector('[data-chat-open]').click());
+    await page.waitFor(() => document.querySelectorAll('.aia-drawer .aia-tool').length === 2, { timeoutMs: 5000 });
+    await page.click('.aia-drawer .aia-tool:first-child .aia-tool-line');
+    const reopened = await page.evaluate(() => [...document.querySelectorAll('.aia-drawer .aia-tool:first-child .aia-tool-part pre')].map((p) => p.textContent));
+    assert.equal(reopened[1], CUT, 'raw text restored from the saved chat');
+    assert.deepEqual(page.errors(), []);
+  } finally {
+    await upstream.close();
   }
 });
 

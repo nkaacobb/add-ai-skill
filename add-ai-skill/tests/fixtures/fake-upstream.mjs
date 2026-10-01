@@ -2,6 +2,7 @@
 // first) and records every request, so tests can check what a relay or the drawer sent (model, key, tools…).
 //
 // `respond(body, n)` scripts the answers: return { text } for a reply, or { toolCalls: [{ id, name, arguments }] }
+// (`rawArguments`: argument text sent as-is, e.g. cut off; `finish`: the finish_reason, e.g. 'length')
 // for tool calls (streamed in pieces, the way real servers send them). Default: the fixed `reply`.
 // `cors: true` answers browser pages directly (the drawer's "custom" provider).
 
@@ -29,12 +30,12 @@ export async function startFakeUpstream({ delayMs = 0, reply = ['Hello', ' from'
       const chunks = [];
       if (plan.toolCalls?.length) {
         plan.toolCalls.forEach((c, index) => {
-          const args = JSON.stringify(c.arguments || {});
+          const args = typeof c.rawArguments === 'string' ? c.rawArguments : JSON.stringify(c.arguments || {});
           const cut = Math.max(1, Math.floor(args.length / 2));
           chunks.push({ choices: [{ delta: { tool_calls: [{ index, id: c.id || `call_${index + 1}`, type: 'function', function: { name: c.name, arguments: args.slice(0, cut) } }] } }] });
           chunks.push({ choices: [{ delta: { tool_calls: [{ index, function: { arguments: args.slice(cut) } }] } }] });
         });
-        chunks.push({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] });
+        chunks.push({ choices: [{ delta: {}, finish_reason: plan.finish || 'tool_calls' }] });
       }
       for (const text of [].concat(plan.text || [])) chunks.push({ choices: [{ delta: { content: text } }] });
       res.writeHead(200, { 'Content-Type': 'text/event-stream', ...corsHeaders });

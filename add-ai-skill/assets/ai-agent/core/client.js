@@ -58,7 +58,8 @@ export function resolveTarget(settings, keyFor, providerId = settings.provider, 
  * @param {Array<{role, content}>} o.messages
  * @param {AbortSignal} [o.signal]
  * @param {(e: {type: 'text'|'reasoning'|'notice'|'status', text: string}) => void} o.onEvent
- * @returns {Promise<{usage?, provider, label, model, fellBack?, toolCalls: Array<{id, name, arguments}>}>}
+ * @returns {Promise<{usage?, provider, label, model, fellBack?, truncated?, toolCalls: Array<{id, name, arguments, raw?, argsError?}>}>}
+ *   truncated: the reply stopped at the max-tokens limit (Settings > Agent > Max reply tokens).
  */
 export async function streamChat({ settings, keyFor, system, messages, signal, onEvent, fetch, relayHeaders, tools, toolTurns, turnId }) {
   const primary = resolveTarget(settings, keyFor, settings.provider, { relayHeaders });

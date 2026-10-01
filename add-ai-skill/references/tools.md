@@ -91,6 +91,10 @@ export const appTools = [
 Parameter types: `string` (`maxLength`), `number` / `integer` (`min`, `max`, `step`), `boolean`, `enum` (`values`),
 `array` (`items`, `maxItems`); each may have `required`, `description`, `default`, `aliases`. Arguments are coerced and
 clamped before `run()` is called; unknown ones are dropped; a missing required one goes back to the model as an error.
+Text over a string's `maxLength` (default **500**) is an error too, with both sizes ("`notes` is 12,981 characters
+long, over its limit of 12,000: send less in one call"); it is never cut, so a JSON payload cannot reach `run()`
+half-written. Give large-text parameters an explicit `maxLength`. Arguments the runtime cannot read (broken or
+cut-off JSON) are reported to the model and the call is not run; values are never guessed.
 
 `run(args, { agent, signal, call })` may be async (30 s timeout by default, `timeoutMs` to change). Its return value
 goes to the model: a string as written, anything else as compact JSON, capped at 4,000 characters. Throw (or return
@@ -138,8 +142,12 @@ Settings > Tools, download `ai-tools.json`, and commit it to the app.
 - **How tools are called** (`toolMode`): *Automatic* (native tool calls; if the server refuses them, text blocks),
   *Tool calls*, or *Text blocks* (any model: tools described in the prompt, the model writes ```` ```tool ```` blocks).
 - **Max tool steps per question** (`maxToolSteps`, default 8).
-- Every call appears as a chip in the reply (running / waiting / done / failed / declined / off); the actions are kept
+- Every call appears as a row in the reply (running / waiting / done / failed / declined / off); the actions are kept
   in the saved chat and summarised in later requests (`[Actions taken: …]`).
+- A finished row **rolls down** (click its line) to show the problem, if any, the *Arguments the tool received*, the
+  arguments *As the model sent them* (only when they differ: broken, cut off, or changed by validation) and what was
+  *Returned to the model*, with a **Copy** button. **Copy tool log** under the reply copies every row as text. Saved
+  chats keep the detail (2,000 characters per part). This is the first place to look when a tool call fails.
 - After tools change the screen, the new snapshot goes back with the results, so the model checks its work; afterwards
   the flag is amber and the next question re-reads the page.
 
@@ -154,6 +162,12 @@ Settings > Tools, download `ai-tools.json`, and commit it to the app.
   `limits.maxToolSteps`; `limits.maxTools` caps the definitions per request.
 - Tool definitions cost tokens on every request (Settings > Context shows them in the size estimate): keep
   descriptions short, and prefer a few well-shaped tools over many tiny ones.
+- **Cut-off replies are detected** (OpenAI-compatible `finish_reason: "length"`, Anthropic `stop_reason:
+  "max_tokens"`, Gemini `finishReason: "MAX_TOKENS"`, relay `done.truncated`). A call cut off mid-arguments is not
+  run; its row says *Cut off: the reply reached Max reply tokens…* and the model is told to do the work in several
+  smaller calls. Models that think before they answer spend part of *Max reply tokens* (Settings > Agent, default
+  4,096) on thinking: raise it for them. Design tools that take large payloads (note lists, rows, documents) to take
+  them **in sections** — a `bar` / `offset` / `part` parameter — so one call fits in one reply.
 - Some local models answer the step after a tool round only in their reasoning channel; the drawer then shows that
   reasoning as the answer.
 

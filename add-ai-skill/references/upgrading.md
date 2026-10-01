@@ -74,8 +74,19 @@ version's **Upgrading** notes. They say what to migrate and which app-side worka
   | sign-in/CSRF code at "enforce it here" | `'authorize' => static function (): bool\|string { … }` |
 
   An embedded Node relay: update its imports to the new `relay.mjs` exports (`createRelay`, `loadConfig`).
-- **Caches**: bump the version in the asset URLs (`?v=1.3.0`) or rely on `no-cache`, so browsers load the new files.
+- **Caches**: bump the version in the asset URLs (`?v=1.4.0`) or rely on `no-cache`, so browsers load the new files.
 - **Web server limits** when the app uses a relay and screenshots: request bodies grow (see `providers.md`).
+- **Tool-call behaviour from runtime 1.4** (check the app's tools against it):
+  - Text over a string parameter's `maxLength` — **500 when unset** — is an error the model is told about, no longer
+    cut. Give every parameter that takes long text (documents, note lists, JSON) an explicit `maxLength`.
+  - Arguments that cannot be read (broken or cut-off JSON) are reported to the model and the call is not run.
+    `parseArguments()` (`core/tools.js`) returns `{}` for such text instead of a guess from the `key: value` parser.
+  - Tool calls from the adapters and `streamChat()` carry `raw` (the model's argument text) and, when unreadable,
+    `argsError`; app code that compares whole call objects must allow for them. Calls sent back to the provider are
+    stripped to the wire fields. A 1.4 relay sends `tool_call.raw` and `done.truncated`; older relays still work.
+  - A tool row's line is now a `<button class="aia-tool-line">` (it was a `div`) with a caret, and finished rows roll
+    down. Check any app CSS that styles `.aia-tool-line` or `.aia-tool`. The reply action id `copy-tools` is taken by
+    the built-in *Copy tool log*.
 
 ## U5. Remove workarounds the new runtime covers
 
@@ -144,12 +155,12 @@ the integration module), and committed with the app. It lets the next upgrade kn
 ```json
 {
   "skill": "add-ai-skill",
-  "skillVersion": "1.4.0",
-  "runtimeVersion": "1.3.0",
+  "skillVersion": "1.5.0",
+  "runtimeVersion": "1.4.0",
   "updated": "2026-09-30",
   "appId": "inventory",
   "runtime": "public/ai-agent",
-  "relay": { "file": "public/api/relay.php", "version": "1.3.0", "mode": "public", "config": "AIA_RELAY_DIR (outside the web root)" },
+  "relay": { "file": "public/api/relay.php", "version": "1.4.0", "mode": "public", "config": "AIA_RELAY_DIR (outside the web root)" },
   "integration": ["public/js/ai-agent-setup.js", "public/js/ai-content.js", "public/js/ai-tools.js"],
   "toolsConfig": "public/js/ai-tools.json",
   "memoryFile": "public/js/ai-memory.json",

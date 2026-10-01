@@ -6,6 +6,7 @@ import { planTurn, contextState, buildRequestMessages, snapshotBlock } from '../
 import {
   REQUEST_TOOL, classifyTools, toolSpecs, requestToolSpec, buildToolPrompt, parseTextToolCalls, textTurnMessages,
   validateArgs, toolEnabled, toolAvailable, serializeResult, formatCall, normalizeTool,
+  argumentsProblem, callDetail, callReport, wireCall, STATUS_WORDS,
 } from '../core/tools.js';
 import { buildMemoryPrompt } from '../core/memory.js';
 import { createCapture } from './capture.js';
@@ -27,6 +28,11 @@ const MESSAGE_LIMIT = 200;
 const REASONING_TAIL = 20000;
 const SHOTS_IN_MEMORY = 8;      // full-size screenshots kept for this page load (saved chats keep thumbnails only)
 const PENDING_SHOTS = 3;        // screenshots one question can carry
+const DETAIL_SAVED = 2000;      // characters of each part of a tool row's detail kept in saved chats (the live row has all)
+
+/** A tool row's detail as saved chats keep it: each part capped at DETAIL_SAVED characters. */
+const savedDetail = (d) => Object.fromEntries(Object.entries(d).map(([k, v]) => [k, v.length > DETAIL_SAVED
+  ? `${v.slice(0, DETAIL_SAVED)}… [${nf(v.length - DETAIL_SAVED)} more characters not kept in saved chats]` : v]));
 
 const FLAG = {
   synced: (s) => `Agent has this page${s.title ? ` · ${s.title}` : ''}`,
@@ -57,6 +63,7 @@ export class AgentDrawer {
     this.chatsKey = `${this.ns}.chats`;
     this.conv = { id: null, messages: [] };
     this.replies = new Map();
+    this.toolDetails = new WeakMap();  // tool row -> { name, title, status, detail }: what rolling it down shows
     this.streaming = null;
     this.forceReread = false;
     this.status = { state: 'none' };
@@ -354,6 +361,10 @@ export class AgentDrawer {
 
     const codeBtn = t.closest('[data-aia-code-action]');
     if (codeBtn) return this.runCodeAction(codeBtn);
+    const toolCopy = t.closest('[data-aia-tool-copy]');
+    if (toolCopy) { this.copyToolRows([toolCopy.closest('.aia-tool')], toolCopy); return undefined; }
+    const toolToggle = t.closest('[data-aia-tool-toggle]');
+    if (toolToggle) return this.toggleToolDetail(toolToggle);
     const replyBtn = t.closest('[data-aia-reply-action]');
     if (replyBtn) return this.runReplyAction(replyBtn);
     return undefined;
@@ -381,9 +392,10 @@ export class AgentDrawer {
   }
 
   runReplyAction(btn) {
+    const id = btn.dataset.aiaReplyAction;
+    if (id === 'copy-tools') { this.copyToolRows([...btn.closest('.aia-msg').querySelectorAll('.aia-tool-log > .aia-tool')], btn); return; }
     const reply = this.replyFor(btn);
     if (!reply || !reply.markdown) return;
-    const id = btn.dataset.aiaReplyAction;
     if (id === 'copy') { copyText(reply.markdown); flash(btn); return; }
     const action = (this.o.replyActions || []).find((x) => x.id === id);
     if (!action) return;
@@ -456,8 +468,8 @@ export class AgentDrawer {
   /** Assistant message scaffold: notice line, collapsible reasoning, text, actions. */
   addAssistantView() {
     const wrap = this.addWrap('assistant');
-    const actions = [{ id: 'copy', label: 'Copy' }, ...(this.o.replyActions || [])]
-      .map((a) => `<button type="button" class="aia-msg-action" data-aia-reply-action="${esc(a.id)}"${a.title ? ` title="${esc(a.title)}"` : ''}>${esc(a.label)}</button>`).join('');
+    const actions = [{ id: 'copy', label: 'Copy' }, { id: 'copy-tools', label: 'Copy tool log', title: 'Every tool call of this reply: arguments, errors and results', hidden: true }, ...(this.o.replyActions || [])]
+      .map((a) => `<button type="button" class="aia-msg-action" data-aia-reply-action="${esc(a.id)}"${a.title ? ` title="${esc(a.title)}"` : ''}${a.hidden ? ' hidden' : ''}>${esc(a.label)}</button>`).join('');
     wrap.querySelector('.aia-bubble').innerHTML = `
       <p class="aia-notice" hidden></p>
       <details class="aia-reasoning" hidden><summary>Thinking…</summary><div class="aia-reasoning-text"></div></details>
@@ -519,6 +531,7 @@ export class AgentDrawer {
       const chip = this.addChip(view, a.title || a.call, a.call);
       this.setChip(chip, a.status, a.summary || '');
       if (a.thumb) this.addChipShot(chip, { id: a.shot || '', thumb: a.thumb });
+      if (a.detail) this.setToolDetail(chip, { name: a.name || a.call, title: a.title || '', status: a.status, detail: a.detail });
     }
     this.paint(view);
     view.actions.hidden = false;
@@ -766,23 +779,69 @@ export class AgentDrawer {
     };
   }
 
+  /** A tool row. Once the call is over it rolls down (click the line) to show what was sent and what came back. */
   addChip(view, title, call) {
     view.toolLog.hidden = false;
     const chip = h(`<div class="aia-tool" data-status="running">
-      <div class="aia-tool-line"><span class="aia-tool-dot" aria-hidden="true"></span><span class="aia-tool-title">${esc(title)}</span><code class="aia-tool-call">${esc(call)}</code><span class="aia-tool-state"></span></div>
+      <button type="button" class="aia-tool-line" data-aia-tool-toggle aria-expanded="false" disabled><span class="aia-tool-caret" aria-hidden="true">▸</span><span class="aia-tool-dot" aria-hidden="true"></span><span class="aia-tool-title">${esc(title)}</span><code class="aia-tool-call">${esc(call)}</code><span class="aia-tool-state"></span></button>
       <div class="aia-tool-card" hidden></div>
+      <div class="aia-tool-detail" hidden></div>
     </div>`);
     view.toolLog.appendChild(chip);
+    const copyLog = view.actions.querySelector('[data-aia-reply-action="copy-tools"]');
+    if (copyLog) copyLog.hidden = false;
     this.scrollToEnd();
     return chip;
   }
 
   setChip(chip, status, detail = '') {
-    const words = { running: 'Running…', waiting: 'Waiting for you', ok: 'Done', error: 'Failed', declined: 'Declined', off: 'Turned off', skipped: 'Skipped' };
     chip.dataset.status = status;
     const state = chip.querySelector('.aia-tool-state');
-    state.textContent = words[status] || status;
+    state.textContent = STATUS_WORDS[status] || status;
     state.title = detail ? String(detail).slice(0, 600) : '';
+  }
+
+  /** What a finished tool row shows when rolled down: info = { name, title, status, detail: callDetail() }. */
+  setToolDetail(chip, info) {
+    this.toolDetails.set(chip, info);
+    const line = chip.querySelector('.aia-tool-line');
+    line.disabled = false;
+    line.title = 'Show what was sent and what came back';
+    if (!chip.querySelector('.aia-tool-detail').hidden) this.renderToolDetail(chip);
+  }
+
+  toggleToolDetail(line) {
+    const chip = line.closest('.aia-tool');
+    if (line.disabled || !chip || !this.toolDetails.has(chip)) return;
+    const box = chip.querySelector('.aia-tool-detail');
+    const open = box.hidden;
+    if (open) this.renderToolDetail(chip);
+    box.hidden = !open;
+    line.setAttribute('aria-expanded', String(open));
+  }
+
+  renderToolDetail(chip) {
+    const { status, detail: d } = this.toolDetails.get(chip);
+    const part = (label, text) => `<div class="aia-tool-part"><div class="aia-tool-part-label">${esc(label)}</div><pre>${esc(text)}</pre></div>`;
+    chip.querySelector('.aia-tool-detail').innerHTML = [
+      d.problem ? `<p class="aia-tool-problem">${esc(d.problem)}</p>` : '',
+      part('Arguments the tool received', d.args || '{}'),
+      d.sent ? part(`As the model sent them · ${nf(d.sent.length)} chars`, d.sent) : '',
+      part(status === 'error' ? 'Error returned to the model' : 'Returned to the model', d.result || '(nothing)'),
+      '<div class="aia-tool-buttons"><button type="button" class="aia-msg-action" data-aia-tool-copy>Copy</button></div>',
+    ].join('');
+  }
+
+  /** Copy tool rows as plain text: one row (its Copy button) or every row of a reply ("Copy tool log"). */
+  copyToolRows(chips, btn) {
+    const text = chips.filter(Boolean).map((chip) => {
+      const info = this.toolDetails.get(chip);
+      if (info) return callReport(info);
+      return `${chip.querySelector('.aia-tool-title')?.textContent || 'Tool'} · ${chip.querySelector('.aia-tool-state')?.textContent || ''}`;
+    }).join('\n\n----------------\n\n');
+    if (!text) return;
+    copyText(text);
+    flash(btn);
   }
 
   /** Show a question with buttons on a tool chip; resolves to the chosen button id ('cancel' when stopped). */
@@ -835,16 +894,21 @@ export class AgentDrawer {
       const choice = await this.decide(chip, `The agent wants to use <b>${esc(want.title)}</b>, which is turned off.${reason}`, [
         { id: 'on', label: 'Turn on', primary: true }, { id: 'off', label: 'Keep off' },
       ], signal);
+      // The row rolls down like any other: what the model asked for and what it was told.
+      const answer = (status, content) => {
+        const detail = callDetail({ call, args: call.arguments || {}, result: content });
+        this.setToolDetail(chip, { name: REQUEST_TOOL, title: `Turn on ${want.title}`, status, detail });
+        actions.push({ call: `turn on ${want.name}`, title: `Turn on ${want.title}`, status, name: REQUEST_TOOL, detail: savedDetail(detail) });
+        return result(content);
+      };
       if (choice === 'on') {
         this.setToolEnabled(want.name, true);
         this.setChip(chip, 'ok', 'Turned on');
         chip.querySelector('.aia-tool-state').textContent = 'Turned on';
-        actions.push({ call: `turn on ${want.name}`, title: `Turn on ${want.title}`, status: 'ok' });
-        return result(`The user turned on ${want.name}. You can call it now.`);
+        return answer('ok', `The user turned on ${want.name}. You can call it now.`);
       }
       this.setChip(chip, 'off');
-      actions.push({ call: `turn on ${want.name}`, title: `Turn on ${want.title}`, status: 'declined' });
-      return result(`The user kept ${want.name} turned off. Do not call it; explain how they can do it themselves, or that they can turn it on in Settings > Tools.`);
+      return answer('declined', `The user kept ${want.name} turned off. Do not call it; explain how they can do it themselves, or that they can turn it on in Settings > Tools.`);
     }
 
     const settings = this.store.get();
@@ -852,31 +916,52 @@ export class AgentDrawer {
     if (!tool) return result(`There is no tool named "${call.name}". Use only the tools you were given.`);
     const v = validateArgs(tool, call.arguments);
     const chip = this.addChip(view, tool.title, formatCall(tool.name, v.args));
+    let entry = null;
+    let problem = '';
     const record = (status, summary = '') => {
       this.setChip(chip, status, summary);
-      actions.push({ call: formatCall(tool.name, v.args), title: tool.title, status, summary: String(summary).slice(0, 200) });
+      entry = { call: formatCall(tool.name, v.args), title: tool.title, status, summary: String(summary).slice(0, 200) };
+      actions.push(entry);
       this.emit('tool', { name: tool.name, args: v.args, status, result: summary });
     };
+    // Every way out after the row exists: the row rolls down to show the arguments and what the model was told.
+    const reply = (content, changed = false) => {
+      const detail = callDetail({ call, args: v.args, problem, result: content });
+      this.setToolDetail(chip, { name: tool.name, title: tool.title, status: entry?.status || 'error', detail });
+      if (entry) Object.assign(entry, { name: tool.name, detail: savedDetail(detail) });
+      return result(content, changed);
+    };
 
-    if (!settings.toolsEnabled && !tool.builtin) { record('off'); return result('Tools are switched off by the user (Settings > Tools).'); }
+    if (!settings.toolsEnabled && !tool.builtin) { record('off'); return reply('Tools are switched off by the user (Settings > Tools).'); }
     let consented = false;
     if (tool.builtin === 'vision' && !toolEnabled(tool, settings)) {
       return this.finishBuiltin(tool, () => this.agentScreenshot(chip, signal, { allowed: false }), { chip, actions, result, args: v.args });
     }
-    if (tool.builtin && !toolEnabled(tool, settings)) { record('off'); return result('Saving memories is switched off by the user (Settings > Memory).'); }
+    if (tool.builtin && !toolEnabled(tool, settings)) { record('off'); return reply('Saving memories is switched off by the user (Settings > Memory).'); }
     if (!toolEnabled(tool, settings)) {
       const choice = await this.decide(chip, `<b>${esc(tool.title)}</b> is turned off. Turn it on and run it?`, [
         { id: 'on', label: 'Turn on and run', primary: true }, { id: 'off', label: 'Keep off' },
       ], signal);
-      if (choice !== 'on') { record('off'); return result(`${tool.name} is turned off and the user kept it off. Do not call it again.`); }
+      if (choice !== 'on') { record('off'); return reply(`${tool.name} is turned off and the user kept it off. Do not call it again.`); }
       this.setToolEnabled(tool.name, true);
       consented = true;
     }
     if (!toolAvailable(tool, this.ctx.page?.id)) {
       record('skipped', 'Not available on this screen');
-      return result(`${tool.name} is not available on this screen${tool.pages.length ? ` (it works on: ${tool.pages.join(', ')})` : ''}.`);
+      return reply(`${tool.name} is not available on this screen${tool.pages.length ? ` (it works on: ${tool.pages.join(', ')})` : ''}.`);
     }
-    if (!v.ok) { record('error', v.errors.join('; ')); return result(`Invalid arguments: ${v.errors.join('; ')}. Check the tool's parameters and try again.`); }
+    if (call.argsError) {
+      // The arguments could not be read (often: the reply hit Max reply tokens mid-call). Say so; do not guess them.
+      const p = argumentsProblem(call, { cutOff: call.cutOff, maxTokens: settings.maxOutputTokens });
+      problem = p.summary;
+      record('error', p.summary);
+      return reply(p.content);
+    }
+    if (!v.ok) {
+      problem = `Invalid arguments: ${v.errors.join('; ')}.`;
+      record('error', v.errors.join('; '));
+      return reply(`Invalid arguments: ${v.errors.join('; ')}. Check the tool's parameters and try again.`);
+    }
 
     const ask = tool.effect === 'destructive' ? settings.confirmDestructive
       : tool.effect === 'write' ? settings.confirmWrites && !this.allowedTools.has(tool.name) : false;
@@ -886,8 +971,8 @@ export class AgentDrawer {
       buttons.push({ id: 'skip', label: 'Skip' });
       const what = tool.effect === 'destructive' ? 'This removes or overwrites something.' : 'This changes the application.';
       const choice = await this.decide(chip, tool.confirmHtml?.(v.args) || `Run <b>${esc(tool.title)}</b>? ${what}`, buttons, signal);
-      if (choice === 'cancel') { record('skipped'); return result('Stopped by the user.'); }
-      if (choice === 'skip') { record('declined'); return result(`The user declined to run ${tool.name}. Do not call it again for this request.`); }
+      if (choice === 'cancel') { record('skipped'); return reply('Stopped by the user.'); }
+      if (choice === 'skip') { record('declined'); return reply(`The user declined to run ${tool.name}. Do not call it again for this request.`); }
       if (choice === 'chat') this.allowedTools.add(tool.name);
     }
 
@@ -903,11 +988,11 @@ export class AgentDrawer {
       ]).finally(() => clearTimeout(timer));
       const content = serializeResult(value);
       record('ok', content);
-      return result(content, tool.effect !== 'read');
+      return reply(content, tool.effect !== 'read');
     } catch (e) {
       const msg = String(e?.message || e);
       record('error', msg);
-      return result(`Error: ${msg}`, tool.effect !== 'read');
+      return reply(`Error: ${msg}`, tool.effect !== 'read');
     }
   }
 
@@ -924,7 +1009,9 @@ export class AgentDrawer {
     if (out.label && status === 'ok') chip.querySelector('.aia-tool-state').textContent = out.label;
     if (out.thumb) this.addChipShot(chip, { id: out.shot, thumb: out.thumb });
     if (typeof out.undo === 'function' && status === 'ok') this.addChipUndo(chip, out.undo);
-    actions.push({ call: formatCall(tool.name, args), title: tool.title, status, summary, ...(out.thumb ? { thumb: out.thumb, shot: out.shot } : {}) });
+    const detail = callDetail({ call: { arguments: args }, args, result: String(out.content ?? 'Done.') });
+    this.setToolDetail(chip, { name: tool.name, title: tool.title, status, detail });
+    actions.push({ call: formatCall(tool.name, args), title: tool.title, status, summary, name: tool.name, detail: savedDetail(detail), ...(out.thumb ? { thumb: out.thumb, shot: out.shot } : {}) });
     this.emit('tool', { name: tool.name, args, status, result: summary });
     const r = result(String(out.content ?? 'Done.'));
     if (Array.isArray(out.images) && out.images.length) r.images = out.images;
@@ -991,7 +1078,7 @@ export class AgentDrawer {
       let stepText = splitReasoning(stepRaw).text.trim();
       let calls = result.toolCalls || [];
       if (mode === 'text' && set.active) {
-        const parsed = parseTextToolCalls(stepText, `t${step}_`);
+        const parsed = parseTextToolCalls(stepText, `t${step}_`, { cutOff: !!result.truncated });
         calls = parsed.calls;
         if (calls.length) {
           view.raw = view.raw.slice(0, stepStart) + parsed.text;
@@ -999,7 +1086,14 @@ export class AgentDrawer {
           this.paint(view);
         }
       }
+      // A reply that hit Max reply tokens while writing a call: that call's arguments are cut off (executeTool says so).
+      const lastCall = calls[calls.length - 1];
+      if (result.truncated && lastCall?.argsError) lastCall.cutOff = true;
       if (!calls.length || mode === 'off') {
+        if (result.truncated) {
+          view.notice.textContent = `The reply reached Max reply tokens (${nf(settings.maxOutputTokens)}) and was cut off. Raise it in Settings > Agent, or ask for less at once.`;
+          view.notice.hidden = false;
+        }
         // After tool rounds, some local models (seen with LM Studio + a Qwen 3.5 9B) put their whole closing answer
         // in the reasoning channel and leave the text empty. Then that last step's reasoning is what they said.
         if (toolTurns.length && !stepText) {
@@ -1040,7 +1134,7 @@ ${snapshotBlock(snap)}`;
           }
         } catch { /* the content hook failed: the results still go back */ }
       }
-      toolTurns.push({ text: stepText, calls, results: results.map(({ id, name, content, images }) => (images ? { id, name, content, images } : { id, name, content })) });
+      toolTurns.push({ text: stepText, calls: calls.map(wireCall), results: results.map(({ id, name, content, images }) => (images ? { id, name, content, images } : { id, name, content })) });
       if (view.raw && !view.raw.endsWith('\n\n')) view.raw += '\n\n';
       view.status = 'Continuing…';
       view.paint();

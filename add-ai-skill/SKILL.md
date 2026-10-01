@@ -13,7 +13,7 @@ Build this pattern into the user's application:
    - **page** — which page/view is open and what it is for (system prompt)
    - **content** — the live screen content, fingerprinted with a hash; plus **view** — volatile UI state (cursor, selection, filters), sent each turn but never hashed
 3. **Context sync with a visible flag.** Before every question the runtime hashes the screen and compares it with the newest snapshot the model already has in the conversation. Same hash → send only the question. Different → attach a fresh snapshot. The flag (green *synced* / amber *changed* / blue *not read yet*) shows in the drawer and can be shown anywhere in the app.
-4. **It can act.** Tools wrap the app's own functions (found by surveying its code): the model calls them, the user confirms changes, and every call shows in the chat. Settings > Tools has a checkbox per tool; the app ships its default selection as `ai-tools.json`.
+4. **It can act.** Tools wrap the app's own functions (found by surveying its code): the model calls them, the user confirms changes, and every call shows in the chat as a row that rolls down to show what was sent and what came back (with Copy, and *Copy tool log* per reply); a call cut off at *Max reply tokens* or with unreadable arguments is reported, never run. Settings > Tools has a checkbox per tool; the app ships its default selection as `ai-tools.json`.
 5. **It remembers.** "Remember that…" saves a note (built-in `remember` tool, a chip with Undo); the notes are part of every conversation. Settings > Memory lists them to add, edit, delete, export and import; the app ships its starting notes as `ai-memory.json`.
 6. **It can look.** For models that see images: a camera button attaches a screenshot of what the user is looking at, and — only if the user frees it — the agent takes one itself (`take_screenshot`). Every screenshot shows in the chat as a thumbnail. Settings > Vision has the "model can see images" and "only when I press the button" switches.
 7. **Rich rendering.** Streaming, escape-first Markdown (headings, lists, task lists, tables, quotes, fenced code with Copy and app-specific buttons), a collapsible "thinking" panel.
@@ -202,6 +202,7 @@ Write one tools module (e.g. `ai-tools.js`) from the tool plan, following `refer
 
 - Each tool wraps a function the app **already has** (store action, API client call, service function) or drives the real control with `setControlValue` / `click()` when the logic lives in a handler. Never reimplement business logic, and never add a tool the UI does not offer the user.
 - Accurate `effect` (when unsure, the stronger one), short `description` in the user's words, parameters with the real ranges/options and `required`, `pages` / `when` for where it applies, and a short factual return value (counts, ids, new values, errors).
+- Every string parameter that takes long text gets an explicit `maxLength` (the default is 500; longer text is an error, never cut). A tool that takes a large payload (note lists, rows, a document) takes it in sections (`offset` / `part`), so one call fits in one reply.
 - Register the catalog with `createAiAgent({ tools, toolsConfig: 'ai-tools.json' })` (page-only tools can go in `setPage({ tools })`), and write `ai-tools.json` with the user's choice of what starts on.
 - Unit-test the module with the app's functions mocked; then, with a model, ask for something each important tool does and check the chip, the confirmation card, the change in the app, and that turned-off tools produce the *Turn on* card.
 
@@ -261,7 +262,7 @@ node <skill>/scripts/verify.mjs http://127.0.0.1:8787/ --change "<js that change
 3. Ask a question: the user message shows **"Read the page · <title> · N chars · <hash>"** and the flag turns green.
 4. Change the content: the flag turns amber. Ask again: the page is re-read (new hash). Ask once more without changes: **"Page unchanged"**.
 5. Navigate to another page: the page context and snapshot follow.
-6. Tools: ask for an action (a chip, the confirmation card for changes, the app changes, the answer confirms); ask "which tools can you use?" (on and off listed); ask for a turned-off tool (the *Turn on* card). Settings > Tools lists every tool with its checkbox.
+6. Tools: ask for an action (a chip, the confirmation card for changes, the app changes, the answer confirms); click the finished row (it rolls down: the arguments and what went back to the model); ask "which tools can you use?" (on and off listed); ask for a turned-off tool (the *Turn on* card). Settings > Tools lists every tool with its checkbox.
 7. Memory: "remember that …" (a *Remember* chip with Undo; Settings > Memory lists it); in a new chat ask what it remembers, and ask about a seed note.
 8. Vision (with a vision model): the camera button puts a thumbnail in the composer, the answer describes the picture; ask it to look at the screen (the *Allow once* card, a thumbnail on the chip).
 9. Type a space and letters in the composer (host shortcuts must not react); open a modal dialog and press the hotkey; dark mode and a narrow window look right.

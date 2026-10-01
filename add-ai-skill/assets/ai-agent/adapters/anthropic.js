@@ -10,12 +10,13 @@
 //   tools: body.tools [{name, description, input_schema}]; the reply streams content_block_start {type:'tool_use',
 //   id, name} + input_json_delta pieces; the exchange goes back as an assistant message with tool_use blocks and a
 //   user message with tool_result blocks.
+//   stop_reason 'max_tokens' (message_delta.delta, or the whole reply): the reply was cut off (`truncated`).
 //   images: a user message with `images` becomes content blocks [{type:'image', source:{type:'base64', media_type,
 //   data}}, {type:'text'}]; an image a tool returned goes inside its tool_result block.
 
 import { requestJson, requestStream, joinUrl, AiError } from '../core/transport.js';
 import { normalizeMessages, imageChars } from '../core/messages.js';
-import { parseArguments } from '../core/tools.js';
+import { toolCall } from '../core/tools.js';
 
 const VERSION = '2023-06-01';
 const headers = (key) => ({ 'x-api-key': key || '', 'anthropic-version': VERSION, 'anthropic-dangerous-direct-browser-access': 'true' });
@@ -81,8 +82,8 @@ export function parseFull(json) {
   const text = json.content.filter((b) => b?.type === 'text').map((b) => b.text).join('');
   const reasoning = json.content.filter((b) => b?.type === 'thinking').map((b) => b.thinking).join('\n');
   if (!text && json.stop_reason === 'refusal') throw new AiError('refused', 'The model declined to answer.');
-  const toolCalls = json.content.filter((b) => b?.type === 'tool_use' && b.name).map((b) => ({ id: b.id, name: b.name, arguments: parseArguments(b.input) }));
-  return { text, reasoning, usage: { input: json.usage?.input_tokens, output: json.usage?.output_tokens }, toolCalls };
+  const toolCalls = json.content.filter((b) => b?.type === 'tool_use' && b.name).map((b) => toolCall(b.id, b.name, b.input));
+  return { text, reasoning, usage: { input: json.usage?.input_tokens, output: json.usage?.output_tokens }, toolCalls, ...(json.stop_reason === 'max_tokens' ? { truncated: true } : {}) };
 }
 
 export function parseModels(json) {
@@ -97,12 +98,14 @@ export const anthropic = {
     if (!cfg.model) throw new AiError('missing-model', 'Choose an Anthropic model in Settings (try "Load models").');
     const r = buildChat({ cfg, key, system, messages, maxTokens, stream: true, tools, toolTurns });
     const usage = {};
+    let stop = '';
     const calls = new Map();
     const res = await requestStream({ ...r, signal, timeoutMs: cfg.timeoutMs, secrets: [key], fetch, imageBytes: imageChars(messages, toolTurns) }, ({ data }) => {
       let json;
       try { json = JSON.parse(data); } catch { return; }
       if (json.type === 'message_start') usage.input = json.message?.usage?.input_tokens;
       if (json.type === 'message_delta' && json.usage) usage.output = json.usage.output_tokens;
+      if (json.type === 'message_delta' && json.delta?.stop_reason) stop = json.delta.stop_reason;
       for (const f of parseEvent(json)) {
         if (f.type !== 'tool') { onEvent(f); continue; }
         const cur = calls.get(f.index) || { id: '', name: '', args: '' };
@@ -116,11 +119,11 @@ export const anthropic = {
       const full = parseFull(res.json);
       if (full.reasoning) onEvent({ type: 'reasoning', text: full.reasoning });
       if (full.text) onEvent({ type: 'text', text: full.text });
-      return { usage: full.usage, toolCalls: full.toolCalls };
+      return { usage: full.usage, toolCalls: full.toolCalls, ...(full.truncated ? { truncated: true } : {}) };
     }
     const toolCalls = [...calls.entries()].sort((a, b) => a[0] - b[0]).filter(([, c]) => c.name)
-      .map(([i, c]) => ({ id: c.id || `toolu_${i}`, name: c.name, arguments: parseArguments(c.args) }));
-    return { usage, toolCalls };
+      .map(([i, c]) => toolCall(c.id || `toolu_${i}`, c.name, c.args));
+    return { usage, toolCalls, ...(stop === 'max_tokens' ? { truncated: true } : {}) };
   },
 
   async listModels({ cfg, key, signal, fetch }) {

@@ -6,8 +6,10 @@
 //   POST {relayUrl}  JSON { action:'chat', provider, baseUrl, model, apiKey, system, messages:[{role,content,images?}],
 //                           maxTokens, temperature, reasoning, tools?, toolTurns?, turnId? }
 //     -> text/event-stream:  event: delta {text} | reasoning {text} | notice {message} | status {message}
-//                            | tool_call {id, name, arguments, signature?}
-//                            | error {message, code?, hints?} | done {usage?, provider?, model?}
+//                            | tool_call {id, name, arguments, signature?, raw?}
+//                            | error {message, code?, hints?} | done {usage?, provider?, model?, truncated?}
+//   tool_call.raw: the arguments as the model wrote them (text), so a broken or cut-off call is diagnosed here;
+//   done.truncated: the reply stopped at the max-tokens limit.
 //   tools / toolTurns use the neutral formats of core/tools.js; the relay translates them for the provider. The tools
 //   themselves always run in the browser. `turnId` lets a public relay count one question per chain of tool steps.
 //   images (1.3): user messages and tool results may carry `images: [{ mime, data }]` (core/messages.js). A relay says
@@ -24,7 +26,7 @@
 
 import { requestJson, requestStream, AiError } from '../core/transport.js';
 import { normalizeMessages, imageChars } from '../core/messages.js';
-import { parseArguments } from '../core/tools.js';
+import { toolCall } from '../core/tools.js';
 import { probeRelay } from '../core/relay-probe.js';
 
 // Relay address -> how many images it accepts per request (asked once, when a request first carries images).
@@ -83,26 +85,29 @@ export const relay = {
     const images = countImages(r.body.messages, toolTurns);
     if (images) await checkImages(cfg, images, fetch);
     let usage;
+    let truncated = false;
     const toolCalls = [];
+    const callFrom = (c) => toolCall(String(c.id || `relay_${toolCalls.length + 1}`), String(c.name), typeof c.raw === 'string' ? c.raw : c.arguments, c.signature ? { signature: String(c.signature) } : {});
     const res = await requestStream({ ...r, signal, timeoutMs: cfg.timeoutMs, secrets: [key], fetch, relay: true, imageBytes: imageChars(r.body.messages, toolTurns) }, ({ event, data }) => {
       let json;
       try { json = JSON.parse(data); } catch { return; }
       if (event === 'delta') onEvent({ type: 'text', text: String(json.text ?? '') });
       else if (event === 'reasoning') onEvent({ type: 'reasoning', text: String(json.text ?? '') });
       else if (event === 'notice' || event === 'status') onEvent({ type: event, text: String(json.message ?? '') });
-      else if (event === 'tool_call' && json.name) toolCalls.push({ id: String(json.id || `relay_${toolCalls.length + 1}`), name: String(json.name), arguments: parseArguments(json.arguments), ...(json.signature ? { signature: String(json.signature) } : {}) });
+      else if (event === 'tool_call' && json.name) toolCalls.push(callFrom(json));
       else if (event === 'error') throw new AiError(json.code || 'refused', `${String(json.message || 'The relay reported an error.')}${json.detail ? ` (${json.detail})` : ''}`, { hints: json.hints });
-      else if (event === 'done') usage = json.usage;
+      else if (event === 'done') { usage = json.usage; truncated = json.truncated === true; }
     });
     if (!res.streamed) {
       const j = res.json;
       if (j.error) throw new AiError(j.error.code || 'refused', String(j.error.message || j.error));
       if (j.reasoning) onEvent({ type: 'reasoning', text: String(j.reasoning) });
       if (j.text) onEvent({ type: 'text', text: String(j.text) });
-      for (const c of Array.isArray(j.toolCalls) ? j.toolCalls : []) if (c?.name) toolCalls.push({ id: String(c.id || `relay_${toolCalls.length + 1}`), name: String(c.name), arguments: parseArguments(c.arguments) });
+      for (const c of Array.isArray(j.toolCalls) ? j.toolCalls : []) if (c?.name) toolCalls.push(callFrom(c));
       usage = j.usage;
+      truncated = j.truncated === true;
     }
-    return { usage, toolCalls };
+    return { usage, toolCalls, ...(truncated ? { truncated: true } : {}) };
   },
 
   async listModels({ cfg, key, signal, fetch }) {

@@ -8,12 +8,13 @@
 //   tools: body.tools [{functionDeclarations:[{name, description, parameters}]}]; the reply has parts
 //   {functionCall:{name, args}} (whole, not streamed in pieces), possibly with a thoughtSignature that must be sent
 //   back; results go back as a user turn of {functionResponse:{name, response:{result}}} parts.
+//   finishReason 'MAX_TOKENS': the reply was cut off at maxOutputTokens (`truncated`).
 //   images: {inlineData:{mimeType, data}} parts after the text of a user turn; an image a tool returned follows the
 //   functionResponse parts of its round in the same user turn.
 
 import { requestJson, requestStream, joinUrl, AiError } from '../core/transport.js';
 import { normalizeMessages, imageChars } from '../core/messages.js';
-import { parseArguments } from '../core/tools.js';
+import { parseArguments, toolCall } from '../core/tools.js';
 
 const headers = (key) => ({ 'x-goog-api-key': key || '' });
 const modelPath = (m) => encodeURIComponent(String(m || '').replace(/^models\//, ''));
@@ -87,11 +88,14 @@ export const gemini = {
     if (!cfg.model) throw new AiError('missing-model', 'Choose a Gemini model in Settings (try "Load models").');
     const r = buildChat({ cfg, key, system, messages, maxTokens, temperature, stream: true, tools, toolTurns });
     let usage;
+    let finish = '';
     const toolCalls = [];
     const handle = (json) => {
       if (json.usageMetadata) usage = { input: json.usageMetadata.promptTokenCount, output: json.usageMetadata.candidatesTokenCount };
+      const reason = Array.isArray(json?.candidates) ? json.candidates[0]?.finishReason : null;
+      if (reason) finish = reason;
       for (const f of parseChunk(json)) {
-        if (f.type === 'tool') toolCalls.push({ id: f.id || `gemini_${toolCalls.length + 1}`, name: f.name, arguments: f.arguments, ...(f.signature ? { signature: f.signature } : {}) });
+        if (f.type === 'tool') toolCalls.push(toolCall(f.id || `gemini_${toolCalls.length + 1}`, f.name, f.arguments, f.signature ? { signature: f.signature } : {}));
         else onEvent(f);
       }
     };
@@ -101,7 +105,7 @@ export const gemini = {
       handle(json);
     });
     if (!res.streamed) handle(res.json);
-    return { usage, toolCalls };
+    return { usage, toolCalls, ...(finish === 'MAX_TOKENS' ? { truncated: true } : {}) };
   },
 
   async listModels({ cfg, key, signal, fetch }) {

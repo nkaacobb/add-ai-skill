@@ -144,6 +144,45 @@
         "relay.php": "5c064684bc86b869d83486546a1eb434b65d130005f9f72aa9923c7977e71e6f",
         "relay.mjs": "fdb49b14e54cdd0a4d29ce686d4ad25d1b27d7e488cfae15db8c8b698f4b5ce0"
       }
+    },
+    "1.4.0": {
+      "runtime": {
+        "adapters/anthropic.js": "083a09470ba0ebe8caebcefd83a5db62d7f403808be26d4995ae8b898aff3529",
+        "adapters/gemini.js": "e1c32b3e0dcce92b896bc1c96404197439a40b324c1f1133cda96f12b988f637",
+        "adapters/index.js": "b1f42f655a0314adfa2efd48bc6d3acee85eb401c5ccc82e39a0cbd2a755037e",
+        "adapters/openai-chat.js": "01f99e478da0a2f0a40ff3ce67924a19b3b298ba8db7c9fa49ff04486e958ac4",
+        "adapters/relay.js": "bfa1ec99cc8c3f7a8d842e9613c554a833695aeeb7739b3cc177ffb49fe27f74",
+        "ai-agent.css": "c8a719179e08f61ad178a98d77088b77256083a715504bac4f620ed8d384d16c",
+        "ai-agent.d.ts": "1b17e35c7897583a255d989a418c7e5a6f0ec0a9c3bcce837a0110beee199a8b",
+        "ai-agent.js": "742e7e558e0efec30a5481ae5323a215d1574e3f30465f6f1b7c6298880aadc1",
+        "core/blocks.js": "5b7710110dfdeae3696dad12c4b674b2f2627753d9a28f256f0be5d738697d6d",
+        "core/client.js": "d937703a94cf239b86ed796e6bb3f4cc74801f0c6af97a6591b06db55caeb4f8",
+        "core/context.js": "5f0428bdcf00a5b1bfc534fbd19441eed47c4f6bd44ca841cd2c82d91db4b650",
+        "core/conversation.js": "beafe5929e623302dc150812ea4fd583c57be7ee5ae47e56ab67dac00321b103",
+        "core/hash.js": "f5071f97e31beaa55aa0dd135391594b2e8fbec4657821d5758c9421385ea722",
+        "core/memory.js": "3e22a346e0899951018095bb281aa69b0b7ab07efc657e573bb0ae857ee32d15",
+        "core/messages.js": "1aa912f13f90e9a04ebe48e342ff7bb4ae6d0ec354251a6bc970edd113875da1",
+        "core/prompt.js": "8bb5ff077c3a844971d3407e818f193de2ba25d26f3fdc0ce5caf9a476c9ccc5",
+        "core/providers.js": "9fca03bb3bf0fc2b63c4be290fc6457abafdb655ff76cd8b77d318cbe01c9438",
+        "core/reasoning.js": "6cbb117f79457963dc6c7855a862212f13c4d31ed3b61555bda291f0565a8f5c",
+        "core/relay-probe.js": "7d6a83fc976ce074b136fa727f2e6f0d14aacd16c7d5c1055d9d8b61af4f21e7",
+        "core/settings.js": "34e5c55e3406222808ae83f702ff955f444a9de29be5e6e574aac710f0ef6636",
+        "core/tools.js": "bbef22008e31f0ce72b6307d40b60bf67f3de39bcf6fbfba6f9d65e58511870d",
+        "core/transport.js": "4838f73abe4699294c8617d4855dc350225cf0f649a7be772efc9809c4e3d57e",
+        "ui/capture.js": "5b8d58722fe9ee0ed9a6794abac0f8a013aa1907a346f13c603bb811428b40c2",
+        "ui/dialogs.js": "07544c5e5ab1f2525b9898397a0bff44838f17e9414d3371529aefe3ff3776dd",
+        "ui/dom.js": "1bc1a3ed0b72060138024b593881a8eac5b3fb4e81b19ef006bf9e6fea379021",
+        "ui/drawer.js": "4d48d91d1e60803ac2b2c23230710a28cbe5c8636a6be2d40e1a5e69e559ac33",
+        "ui/icons.js": "6ad909e1d71d16de3dbe82e31c1a2a5c64c0b20c7596646daf055b9ff7290b59",
+        "ui/layout-check.js": "894fcfe0f36f5fe69680aac1560b486512163c327cb682ee55b546c1d06f8fdf",
+        "ui/markdown.js": "7750cd9d9a5cc7451e349dffc30f6418afcf0955b7bcee9361543d513874be8c",
+        "ui/resize.js": "dac02a0838478fb4e0c630d842aa7612275661d23da11a0a83f22a318d1c2778",
+        "ui/settings-panel.js": "b02488d9d5e0e7d224241109e640694286082d9e340a943130243802000667e6"
+      },
+      "relay": {
+        "relay.php": "357bbc18dbd5c10701796f95e19977680db10f4090e28f5c5ff391b59a1dbb5f",
+        "relay.mjs": "b38b640ac4c7b5b0d447f9c2fd637a426fccfb8ac8877085415449e201aa0d0a"
+      }
     }
   }
 }

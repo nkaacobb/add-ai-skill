@@ -3,8 +3,9 @@
 // set PHP_BIN, or have `php` on the PATH).
 //
 // Covered: the GET contract, local-only mode (a proxied request is not local), public mode (preset lock, visitor keys
-// never forwarded, same-origin checks, rate limits, caps, generic errors with details only for local requests), and
-// the stream (": open" first, ": keepalive" comments while the model is silent, then the reply).
+// never forwarded, same-origin checks, rate limits, caps, generic errors with details only for local requests), the
+// stream (": open" first, ": keepalive" comments while the model is silent, then the reply), and a reply cut off at
+// the max-tokens limit (tool_call.raw, done.truncated).
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,6 +17,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startFakeUpstream } from './fixtures/fake-upstream.mjs';
 import { createRelay, normalizeConfig, addressKey, createStaticHandler } from '../assets/relay/relay.mjs';
+import { streamChat } from '../assets/ai-agent/core/client.js';
+import { sanitizeSettings } from '../assets/ai-agent/core/settings.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RELAY_DIR = path.join(ROOT, 'assets', 'relay');
@@ -251,7 +254,8 @@ function relaySuite(name, start, { skip = false } = {}) {
       assert.equal(r1.status, 200, r1.text);
       const call = r1.text.split('\n\n').find((b) => b.startsWith('event: tool_call'));
       assert.ok(call, `a tool_call event:\n${r1.text}`);
-      assert.deepEqual(JSON.parse(call.split('data: ')[1]), { id: 'call_1', name: 'filter_orders', arguments: { status: 'open' } });
+      assert.deepEqual(JSON.parse(call.split('data: ')[1]), { id: 'call_1', name: 'filter_orders', arguments: { status: 'open' }, raw: '{"status":"open"}' });
+      assert.doesNotMatch(r1.text, /"truncated"/, 'a reply that ended normally is not truncated');
       const sent1 = upstream.lastChat().body;
       assert.equal(sent1.tools[0].function.name, 'filter_orders');
       assert.equal(sent1.tool_choice, 'auto');
@@ -271,6 +275,32 @@ function relaySuite(name, start, { skip = false } = {}) {
       assert.equal((await post({ turnId: 'turn-2', toolTurns })).status, 200, 'its tool step is free');
       const forged = await post({ turnId: 'forged', toolTurns });
       assert.equal(forged.status, 429, 'a "continuation" of an unknown question is counted, so it cannot bypass the limit');
+    } finally { await relay.close(); await upstream.close(); }
+  });
+
+  test(`${name}: a reply cut off at the max-tokens limit: tool_call.raw and done.truncated reach the browser, which diagnoses the call`, { skip, timeout: 30000 }, async () => {
+    // What LM Studio streamed when the reply ran out of tokens part-way through a tool call's arguments.
+    const cut = '{"track": "Concert Grand Piano", "notes": "[[0,\\"C4\\",0.5,0.8],[0.5,\\"E4\\",0.5';
+    const upstream = await startFakeUpstream({ respond: () => ({ toolCalls: [{ id: 'call_1', name: 'write_notes', rawArguments: cut }], finish: 'length' }) });
+    const relay = await start({});                   // local mode: the user's own provider (a loopback server)
+    const tools = [{ name: 'write_notes', description: 'Write notes.', parameters: { type: 'object', properties: { track: { type: 'string' }, notes: { type: 'string' } }, required: ['track', 'notes'] } }];
+    try {
+      const r = await request(relay.url, { method: 'POST', headers: { 'X-Requested-With': 'ai-agent-drawer' }, body: chatBody({ baseUrl: upstream.url, tools }) });
+      assert.equal(r.status, 200, r.text);
+      const event = (type) => {
+        const block = r.text.split('\n\n').find((b) => b.startsWith(`event: ${type}\n`));
+        return block ? JSON.parse(block.split('data: ')[1]) : null;
+      };
+      assert.equal(event('tool_call')?.raw, cut, `the arguments exactly as the model wrote them:\n${r.text}`);
+      assert.equal(event('done')?.truncated, true);
+
+      // The browser's relay adapter reads both: the call is reported as cut off, never run with made-up values.
+      const settings = sanitizeSettings({ transport: 'relay', relayUrl: relay.url, provider: 'custom', profiles: { custom: { baseUrl: upstream.url, model: 'fake-model' } } });
+      const res = await streamChat({ settings, keyFor: () => '', system: '', messages: [{ role: 'user', content: 'Write a piano piece.' }], tools, onEvent: () => {} });
+      assert.equal(res.truncated, true);
+      assert.equal(res.toolCalls[0].raw, cut);
+      assert.deepEqual(res.toolCalls[0].arguments, {});
+      assert.match(res.toolCalls[0].argsError, /stops before it is closed/);
     } finally { await relay.close(); await upstream.close(); }
   });
 

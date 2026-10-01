@@ -453,6 +453,34 @@ body.aia-resizing, body.aia-resizing * { cursor: col-resize !important; user-sel
 .aia-tool-log { display: flex; flex-direction: column; gap: 5px; margin-bottom: 9px; }
 .aia-tool { border: 1px solid var(--aia-border); border-radius: var(--aia-radius-sm); background: var(--aia-bg-elevated); font-size: 12px; }
 .aia-tool-line { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 9px; }
+/* The line is a button: a finished call rolls down to show what was sent and what came back. */
+button.aia-tool-line { width: 100%; margin: 0; border: 0; border-radius: inherit; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+button.aia-tool-line:disabled { cursor: default; color: inherit; }
+button.aia-tool-line:not(:disabled):hover .aia-tool-title { text-decoration: underline; text-underline-offset: 2px; }
+button.aia-tool-line:focus-visible { outline: none; box-shadow: var(--aia-ring); }
+.aia-tool-caret { flex: 0 0 auto; width: 9px; font-size: 10px; line-height: 1; color: var(--aia-text-muted); transition: transform .15s ease; }
+.aia-tool-line:disabled .aia-tool-caret { visibility: hidden; }
+.aia-tool-line[aria-expanded="true"] .aia-tool-caret { transform: rotate(90deg); }
+.aia-tool-detail { padding: 2px 9px 9px; border-top: 1px dashed var(--aia-border); }
+.aia-tool-problem { margin: 7px 0 0; font-size: 12px; color: var(--aia-danger); }
+.aia-tool-part { margin-top: 7px; }
+.aia-tool-part-label { margin-bottom: 3px; font-size: 10.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--aia-text-muted); }
+.aia-tool-part pre {
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+  padding: 6px 8px;
+  font-family: var(--aia-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--aia-text);
+  background: color-mix(in srgb, var(--aia-bg) 60%, transparent);
+  border: 1px solid var(--aia-border);
+  border-radius: var(--aia-radius-sm);
+}
+.aia-tool-detail .aia-tool-buttons { margin-top: 8px; }
 .aia-tool-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--aia-text-faint); }
 .aia-tool-title { flex: 0 0 auto; font-weight: 600; }
 .aia-tool-call { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--aia-mono); font-size: 11px; color: var(--aia-text-muted); }
@@ -818,6 +846,7 @@ html.aia-modal-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .aia-drawer, .aia-drawer.aia-open, .aia-pushed.aia-pushed, .aia-launcher { transition: none; }
   .aia-modal-scrim, .aia-modal-card { animation: none; }
+  .aia-tool-caret { transition: none; }
 }
 
 /* --------------------------------------------------------------- narrow */

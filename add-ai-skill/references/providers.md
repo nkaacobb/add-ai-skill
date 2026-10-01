@@ -122,7 +122,7 @@ the key the user typed.
 
 ```
 GET {relayUrl}   (always 200, so a probe never logs an error)
-→ { "ok": true, "relay": "ai-agent-drawer", "version": "1.3.0", "available": true|false, "mode": "local"|"public",
+→ { "ok": true, "relay": "ai-agent-drawer", "version": "1.4.0", "available": true|false, "mode": "local"|"public",
     "providers": [...], "serverKeys": {"openai": true, …}, "preset": {"provider","model","models":[…],"vision"?} | null,
     "images": 4,                           (how many images one request may carry; 0 = none; absent before 1.3)
     "reason"?: "…", "detail"?: "… (requests from the server itself only)" }
@@ -140,9 +140,9 @@ POST {relayUrl}   Content-Type: application/json   X-Requested-With: ai-agent-dr
   event: delta      data: {"text":"…"}
   event: reasoning  data: {"text":"…"}
   event: notice     data: {"message":"…"}
-  event: tool_call  data: {"id":"…","name":"…","arguments":{…}}     (the tools run in the browser)
+  event: tool_call  data: {"id":"…","name":"…","arguments":{…},"signature"?:"…","raw"?:"…"}   (the tools run in the browser)
   event: error      data: {"message":"…","code":"auth|missing-model|bad-endpoint|network|timeout|rate-limit|refused|budget|malformed"}
-  event: done       data: {"provider":"…","model":"…","usage":{…}}
+  event: done       data: {"provider":"…","model":"…","usage":{…},"truncated"?:true}
 → 4xx/5xx application/json {"ok":false,"error":{"message":"…","code":"…","detail"?:"…"}}   (+ Retry-After on 429)
 
 POST {relayUrl}  { "action": "models", "provider": "…", "baseUrl": "…", "apiKey": "" }
@@ -150,6 +150,11 @@ POST {relayUrl}  { "action": "models", "provider": "…", "baseUrl": "…", "api
 ```
 
 `code` is one of the drawer's error codes and `message` is written for the user: the drawer shows them as they are.
+
+`tool_call.raw` (1.4) is the arguments as the model wrote them (text), and `done.truncated` (1.4) says the reply stopped
+at the max-tokens limit. The browser reads the call from `raw` when it is there, so a broken or cut-off call is
+reported as such instead of running with guessed values (`tools.md`, "Providers and relays"). A relay older than 1.4
+sends neither; it keeps working, but a cut-off call then reads as "could not be read" rather than "cut off".
 
 A relay older than 1.3 would drop images without a word, so before the first request that carries one the drawer asks
 the relay (the GET above) and, when `images` is missing or 0, refuses the question with "the relay cannot pass images"

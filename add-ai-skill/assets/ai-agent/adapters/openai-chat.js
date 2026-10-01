@@ -8,13 +8,14 @@
 // Tools: body.tools [{type:'function', function:{name, description, parameters}}]; the reply streams
 //   delta.tool_calls [{index, id, function:{name, arguments (JSON, in pieces)}}]; the exchange goes back as an
 //   assistant message with tool_calls, then one {role:'tool', tool_call_id, content} per result.
+// finish_reason 'length': the reply stopped at max_tokens, so the call being written may be cut off (`truncated`).
 // Images: a user message with `images` becomes content parts [{type:'text'}, {type:'image_url', image_url:{url:
 //   'data:<mime>;base64,…'}}]. Tool messages are text only, so an image a tool returned (a screenshot) follows the
 //   tool messages of its round in a user message. Checked live against LM Studio with a vision model.
 
 import { requestJson, requestStream, joinUrl, AiError } from '../core/transport.js';
 import { normalizeMessages, imageChars, dataUrl } from '../core/messages.js';
-import { parseArguments } from '../core/tools.js';
+import { toolCall } from '../core/tools.js';
 
 const auth = (key) => (key ? { Authorization: `Bearer ${key}` } : {});
 
@@ -97,10 +98,12 @@ export function parseFull(json) {
   const msg = choice?.message;
   if (!msg || typeof msg !== 'object') throw new AiError('malformed', 'The reply had no message.');
   const reasoning = msg.reasoning_content ?? msg.reasoning;
-  const toolCalls = (Array.isArray(msg.tool_calls) ? msg.tool_calls : []).map((tc, i) => ({
-    id: tc.id || `call_${i + 1}`, name: tc.function?.name || '', arguments: parseArguments(tc.function?.arguments),
-  })).filter((c) => c.name);
-  return { text: textOf(msg.content) || msg.refusal || '', reasoning: typeof reasoning === 'string' ? reasoning : '', usage: usageOf(json.usage), toolCalls };
+  const toolCalls = (Array.isArray(msg.tool_calls) ? msg.tool_calls : [])
+    .map((tc, i) => toolCall(tc.id || `call_${i + 1}`, tc.function?.name || '', tc.function?.arguments)).filter((c) => c.name);
+  return {
+    text: textOf(msg.content) || msg.refusal || '', reasoning: typeof reasoning === 'string' ? reasoning : '', usage: usageOf(json.usage), toolCalls,
+    ...(choice.finish_reason === 'length' ? { truncated: true } : {}),
+  };
 }
 
 /** Assemble streamed tool-call fragments (keyed by index) into complete calls. */
@@ -113,7 +116,7 @@ export function collectToolCalls(parts) {
     cur.args += p.args || '';
     byIndex.set(p.index, cur);
   }
-  return [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([i, c]) => ({ id: c.id || `call_${i + 1}`, name: c.name, arguments: parseArguments(c.args) })).filter((c) => c.name);
+  return [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([i, c]) => toolCall(c.id || `call_${i + 1}`, c.name, c.args)).filter((c) => c.name);
 }
 
 function usageOf(u) {
@@ -149,12 +152,15 @@ export const openaiChat = {
   async stream({ cfg, key, system, messages, maxTokens, temperature, signal, onEvent, fetch, tools, toolTurns }) {
     const r = buildChat({ cfg, key, system, messages, maxTokens, temperature, stream: true, tools, toolTurns });
     let usage;
+    let finish = '';
     const parts = [];
     const res = await requestStream({ ...r, signal, timeoutMs: cfg.timeoutMs, secrets: [key], fetch, imageBytes: imageChars(messages, toolTurns) }, ({ data }) => {
       if (!data || data === '[DONE]') return;
       let json;
       try { json = JSON.parse(data); } catch { return; }
       if (json.usage) usage = usageOf(json.usage);
+      const reason = Array.isArray(json.choices) ? json.choices[0]?.finish_reason : null;
+      if (reason) finish = reason;
       for (const f of parseChunk(json)) {
         if (f.type === 'tool') parts.push(f); else onEvent(f);
       }
@@ -163,9 +169,9 @@ export const openaiChat = {
       const full = parseFull(res.json);
       if (full.reasoning) onEvent({ type: 'reasoning', text: full.reasoning });
       if (full.text) onEvent({ type: 'text', text: full.text });
-      return { usage: full.usage, toolCalls: full.toolCalls };
+      return { usage: full.usage, toolCalls: full.toolCalls, ...(full.truncated ? { truncated: true } : {}) };
     }
-    return { usage, toolCalls: collectToolCalls(parts) };
+    return { usage, toolCalls: collectToolCalls(parts), ...(finish === 'length' ? { truncated: true } : {}) };
   },
 
   async listModels({ cfg, key, signal, fetch }) {

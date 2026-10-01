@@ -1,7 +1,7 @@
 # API reference
 
 `import { createAiAgent, fromDom, DEFAULT_SYSTEM_PROMPT } from './ai-agent/ai-agent.js'` and load `ai-agent/ai-agent.css`.
-Types: `assets/ai-agent/ai-agent.d.ts`. Runtime version: `VERSION` (1.3.0). Tools (the agent acting in the app):
+Types: `assets/ai-agent/ai-agent.d.ts`. Runtime version: `VERSION` (1.4.0). Tools (the agent acting in the app):
 `tools.md`. Memory and screenshots: `memory-and-vision.md`.
 
 ## createAiAgent(options) → agent
@@ -43,7 +43,7 @@ probe (if any) have been applied — questions wait for it automatically.
 | `screenshot` | `null` | `({ reason }) => canvas \| image \| video \| ImageBitmap \| ImageData \| Blob \| data URL \| null` (or a promise): the app's own picture of what the user is looking at. Without it, or when it returns `null`, the browser's screen capture of this tab is used. |
 | `screenshotMaxEdge` | `1280` | Screenshots are scaled down so their longer edge is at most this many pixels (256–4096). |
 | `codeActions` | `[]` | `[{ id, label, title?, when?(block), run(block, agent), doneLabel? }]` → buttons on fenced code blocks (`block = { language, code }`). Copy is built in. For values the app applies, see `parseBlockValues` and `setControlValue`. |
-| `replyActions` | `[]` | `[{ id, label, title?, run(markdown, agent), doneLabel? }]` → buttons under each reply. Copy is built in. |
+| `replyActions` | `[]` | `[{ id, label, title?, run(markdown, agent), doneLabel? }]` → buttons under each reply. *Copy* and *Copy tool log* (shown when the reply has tool rows; ids `copy`, `copy-tools`) are built in. |
 | `defaults` | `{}` | App defaults for any setting (see "Settings"). User choices override them. May be an object, a promise, or a (possibly async) function. |
 | `relayHeaders` | – | Object or function returning headers for relay calls (CSRF tokens). |
 | `saveChats` | `true` | Keep conversations in localStorage ("Saved chats"). Snapshot *text* is never stored. |
@@ -101,7 +101,7 @@ agent.setPage({
 | `memory.add(text)`, `memory.update(id, text)`, `memory.remove(id)`, `memory.clear()` | Change them (saved at once; the same note is not added twice; at most 100 notes of 500 characters). |
 | `memory.export()`, `memory.import(file, { replace })` | The memories as an `ai-memory.json` object; add the memories of such a file (or make them the whole memory). |
 | `screenshot()` | Take a screenshot and put it in the composer for the next question — what the camera button does. With the browser's screen capture, call it from a click. Resolves to `{ width, height, source: 'app' \| 'screen' }` or `null`. |
-| `on(event, fn)` | Events: `open` (`{}`, or `{ resumed: true }` — see below), `close`, `send` `{text, attached, reason, hash}`, `reply` `{text, provider, model, stopped, actions}`, `error` `{error}`, `context` (status), `settings` (settings), `relay` (relay info), `tool` `{name, args, status: 'ok'\|'error'\|'declined'\|'off'\|'skipped', result}`, `tool-state` `{name, enabled}`, `memory` `{memories, change: {type, id?}}`, `screenshot` `{by: 'user'\|'agent', width, height, source}`. Returns unsubscribe. |
+| `on(event, fn)` | Events: `open` (`{}`, or `{ resumed: true }` — see below), `close`, `send` `{text, attached, reason, hash}`, `reply` `{text, provider, model, stopped, actions}` (an action: `{call, title, status, summary, name, detail: {args, sent, problem, result}}`, what its tool row shows rolled down), `error` `{error}`, `context` (status), `settings` (settings), `relay` (relay info), `tool` `{name, args, status: 'ok'\|'error'\|'declined'\|'off'\|'skipped', result}` (`result`: what the tool returned, or why it failed, e.g. *Cut off: …*), `tool-state` `{name, enabled}`, `memory` `{memories, change: {type, id?}}`, `screenshot` `{by: 'user'\|'agent', width, height, source}`. Returns unsubscribe. |
 | `settings.get()`, `settings.save(patch)`, `settings.reset()`, `settings.setKey(provider, key)` | Programmatic settings. |
 | `destroy()` | Remove everything the agent added. |
 

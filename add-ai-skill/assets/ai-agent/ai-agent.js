@@ -38,7 +38,7 @@ export { probeRelay } from './core/relay-probe.js';
 export { setControlValue } from './ui/dom.js';
 export { parseMemoryFile, exportMemoryFile } from './core/memory.js';
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.4.0';
 
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v) && typeof v.then !== 'function';
 

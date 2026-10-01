@@ -5,6 +5,73 @@ All notable changes to the add-ai-skill skill (it builds the "AI agent drawer" i
 `RELAY_VERSION`) carry their own, which only change when their code does. `scripts/release-hashes.json` fingerprints
 every released runtime and relay.
 
+## 1.5.0 — tool-call diagnostics (runtime and relays 1.4.0)
+
+When a tool call fails, the user can now see why, and the model is told what really went wrong. Found with LM Studio
+and `qwen/qwen3.5-9b` (a model that thinks first, at the default *Max reply tokens* of 4,096) writing a long note list
+in one JSON-string argument: the reply was cut off mid-arguments, the lenient parser made up a value from the broken
+JSON, the model was told *missing required argument "notes"*, and it "fixed" its quoting over and over. All 1.4 options
+and methods keep working.
+
+### Cut-off replies
+
+- Every adapter reports `truncated: true` when the reply stopped at the max-tokens limit: OpenAI-compatible
+  `finish_reason: "length"` (streamed or not), Anthropic `stop_reason: "max_tokens"`, Gemini `finishReason:
+  "MAX_TOKENS"`, the relay's `done.truncated`. `streamChat()` passes it on.
+- A cut-off call is **not run**. Its row says *Cut off: the reply reached Max reply tokens (4,096 tokens) after N
+  characters of arguments. Raise it in Settings > Agent, or ask for less per step.*; the model is told to do the work
+  in several smaller calls. A cut-off reply without tool calls shows a notice. In text mode an unclosed ```` ```tool ````
+  block becomes that cut-off call, but only when the reply was truncated.
+
+### Arguments
+
+- `readArguments(value) → { args, error }` (`core/tools.js`): JSON first (trailing commas forgiven), `key: value` lines
+  only when the result is not garbled, and JSON that stops before it is closed is reported as cut off. A call whose
+  arguments cannot be read is reported to the model, never run with guessed values. `parseArguments()` keeps its
+  contract (an object; `{}` for unreadable text).
+- Tool calls carry `raw` (the argument text as the model wrote it) and `argsError`; `wireCall()` strips both before
+  calls go back to the provider.
+- Text over a string parameter's `maxLength` (default 500) is an error with both sizes ("`notes` is 12,981 characters
+  long, over its limit of 12,000: send less in one call"), never cut into broken JSON. Tool arguments only:
+  `parseBlockValues` and fenced blocks still cut, as before.
+
+### Tool rows roll down
+
+- The row's line is a button: once the call is over, clicking it rolls down the problem (if any), *Arguments the tool
+  received*, *As the model sent them* (only when different), *Returned to the model* / *Error returned to the model*,
+  and a **Copy** button. Every finished row does, including the built-in tools and the *Turn on* request.
+- **Copy tool log** under a reply with tool rows copies every row as text.
+- Saved chats keep the detail (each part capped at 2,000 characters), so reopened chats roll down too. Saved action
+  records gain `name` and `detail: { args, sent, problem, result }`.
+- New `core/tools.js` exports: `readArguments`, `jsonUnclosed`, `toolCall`, `wireCall`, `argumentsProblem`,
+  `callDetail`, `callReport`, `STATUS_WORDS`; `parseTextToolCalls(text, idPrefix, { cutOff })`.
+
+### Relays (1.4.0)
+
+- `tool_call` events carry `raw` (the arguments as the model wrote them); `done` carries `truncated: true` when the
+  reply hit the max-tokens limit. `relay.php` tracks the finish reason of all three protocols. An older relay keeps
+  working: a cut-off call then reads as "could not be read" rather than "cut off".
+
+### Skill workflow
+
+- `references/tools.md`: the `maxLength` rule, rows that roll down, cut-off detection, and tools that take large
+  payloads in sections (`offset` / `part`) so one call fits in one reply. Step 8 of `SKILL.md` says the same.
+- Tests: `tests/tool-calls.test.mjs` (argument reading, limits, cut-off detection per provider and through the relay
+  adapter, text mode, row detail), relay tests for `raw` / `truncated` (Node + PHP), and in a real browser a cut-off
+  call rolled down, copied and reopened from a saved chat.
+
+### Upgrading from 1.4
+
+1. Re-copy `assets/ai-agent/` and the relay.
+2. Behaviour changes to know about (`references/upgrading.md`, U4):
+   - A string tool parameter without `maxLength` now refuses text over 500 characters instead of cutting it. Give
+     every parameter that takes long text an explicit `maxLength`.
+   - Unreadable arguments are an error the model sees, not a best guess.
+   - Tool calls from the adapters and `streamChat()` carry `raw` (and `argsError`).
+   - The tool row's line is a `<button>` (it was a `div`): check app CSS that styles `.aia-tool-line`.
+3. For a model that thinks before it answers, raise *Max reply tokens* (`defaults.maxOutputTokens`) if its tool calls
+   carry a lot of data.
+
 ## 1.4.0 — memory and vision (runtime and relays 1.3.0)
 
 The agent remembers what it is asked to remember, and can look at the screen. Both are part of the runtime: an app

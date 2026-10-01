@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ai-agent-drawer — Node relay 1.3 (and optional static file server). Zero dependencies; Node 18+.
+// ai-agent-drawer — Node relay 1.4 (and optional static file server). Zero dependencies; Node 18+.
 //
 //   node relay.mjs [--port 8787] [--host 127.0.0.1] [--path /ai-relay] [--static <dir>] [--config <file>]
 //                  [--allow-remote] [--allow-any-upstream] [--cors <origin>]
@@ -17,6 +17,8 @@
 // Tools (1.2): the request may carry `tools` and `toolTurns` (neutral formats, ../ai-agent/core/tools.js); the relay
 // passes them to the provider and streams the model's calls back as `tool_call` events. Tools run in the browser.
 // A public relay counts one question per chain of tool steps (`turnId`), up to limits.maxToolSteps.
+// Diagnostics (1.4): `tool_call.raw` carries the arguments as the model wrote them, so the browser can tell a broken or
+// cut-off call from a good one; `done.truncated` says the reply stopped at the max-tokens limit.
 // Images (1.3): user messages and tool results may carry `images: [{ mime, data }]` (screenshots; base64 PNG, JPEG,
 // WebP or GIF). They are checked (limits.maxImages per request, limits.maxImageBytes each; 0 images = refuse them)
 // and passed to the provider. The GET reply says how many a request may carry (`images`).
@@ -42,7 +44,7 @@ import { streamChat, listModels } from '../ai-agent/core/client.js';
 import { PROVIDERS, provider, isLocalUrl } from '../ai-agent/core/providers.js';
 import { sanitizeSettings } from '../ai-agent/core/settings.js';
 
-export const RELAY_VERSION = '1.3.0';
+export const RELAY_VERSION = '1.4.0';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /** A refusal with its HTTP status and the drawer's error code; `detail` only reaches requests from this computer. */
@@ -483,8 +485,8 @@ export function createRelay(cfg, { cors = '', isLocal = isLocalRequest, env = pr
             else send(e.type === 'notice' ? 'notice' : 'status', { message: e.text });
           },
         });
-        for (const c of result.toolCalls || []) send('tool_call', { id: c.id, name: c.name, arguments: c.arguments || {}, ...(c.signature ? { signature: c.signature } : {}) });
-        send('done', { usage: result.usage || null, provider: result.provider, model: result.model });
+        for (const c of result.toolCalls || []) send('tool_call', { id: c.id, name: c.name, arguments: c.arguments || {}, ...(c.signature ? { signature: c.signature } : {}), ...(c.raw ? { raw: c.raw } : {}) });
+        send('done', { usage: result.usage || null, provider: result.provider, model: result.model, ...(result.truncated ? { truncated: true } : {}) });
         res.end();
       } catch (e) {
         if (controller.signal.aborted) { res.end(); return; }

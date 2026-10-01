@@ -41,6 +41,11 @@ export interface ToolParameter extends Omit<BlockField, 'type'> {
   required?: boolean;
   description?: string;
   default?: unknown;
+  /**
+   * For 'string': the longest text accepted (default 500). Longer text is an error the model is told about, with both
+   * sizes; it is never cut, so a JSON payload cannot reach run() half-written. Raise it for tools that take large text.
+   */
+  maxLength?: number;
   /** For 'array': the item field (default string). */
   items?: Omit<BlockField, 'aliases'>;
   maxItems?: number;
@@ -169,6 +174,7 @@ export interface CodeAction {
 }
 
 export interface ReplyAction {
+  /** 'copy' and 'copy-tools' are the built-in Copy and Copy tool log buttons. */
   id: string;
   label: string;
   title?: string;
@@ -347,7 +353,9 @@ export interface AiAgentOptions {
 /**
  * 'open' detail: {} — or { resumed: true } when `resume` reopened the drawer during createAiAgent (replayed once, to
  * listeners registered in the same tick; later, check agent.isOpen()). 'relay' detail: RelayInfo (relayProbe).
- * 'tool' detail: { name, args, status: 'ok'|'error'|'declined'|'off'|'skipped', result }. 'tool-state': { name, enabled }.
+ * 'tool' detail: { name, args, status: 'ok'|'error'|'declined'|'off'|'skipped', result }. result: what the tool returned,
+ * or why it failed (e.g. 'Cut off: …' when the reply reached Max reply tokens mid-call; such a call is never run).
+ * 'tool-state': { name, enabled }.
  * 'memory' detail: { memories: Memory[], change: { type: 'add'|'update'|'remove'|'replace'|'clear'|'base', id? } }.
  * 'screenshot' detail: { by: 'user'|'agent', width, height, source: 'app'|'screen' }.
  */

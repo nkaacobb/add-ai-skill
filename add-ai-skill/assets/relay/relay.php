@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * ai-agent-drawer — PHP relay 1.3 (PHP 8.1+ with the curl extension)
+ * ai-agent-drawer — PHP relay 1.4 (PHP 8.1+ with the curl extension)
  * -------------------------------------------------------------------
  * Copy this file into the application unchanged (e.g. api/relay.php) and point the agent at it:
  *   createAiAgent({ relayProbe: true, defaults: { relayUrl: 'api/relay.php' } })
@@ -12,10 +12,12 @@ declare(strict_types=1);
  * Server-Sent Events, in the contract of assets/ai-agent/adapters/relay.js:
  *   POST {action:'chat', provider, baseUrl, model, apiKey, system, messages:[{role,content,images?}], maxTokens, temperature,
  *         reasoning, tools?, toolTurns?, turnId?}
- *         -> text/event-stream: delta {text} | reasoning {text} | tool_call {id, name, arguments} | error {message, code}
- *            | done {…}
+ *         -> text/event-stream: delta {text} | reasoning {text} | tool_call {id, name, arguments, signature?, raw?}
+ *            | error {message, code} | done {provider, model, truncated?}
  *   Tools (neutral formats, see assets/ai-agent/core/tools.js) are translated for the provider; they run in the
  *   browser. A public relay counts one question per chain of tool steps (same turnId), up to limits.maxToolSteps.
+ *   Diagnostics (1.4): tool_call.raw is the arguments as the model wrote them (text), so the browser can tell a broken
+ *   or cut-off call from a good one; done.truncated says the reply stopped at the max-tokens limit.
  *   Images (1.3): user messages and tool results may carry images:[{mime, data}] (screenshots; base64 PNG, JPEG, WebP
  *   or GIF). They are checked (limits.maxImages per request, limits.maxImageBytes each; maxImages 0 refuses them) and
  *   translated for the provider. The GET reply says how many one request may carry (`images`).
@@ -40,9 +42,11 @@ declare(strict_types=1);
  * PHP error log).
  */
 
-const AIA_RELAY_VERSION = '1.3.0';
+const AIA_RELAY_VERSION = '1.4.0';
 const AIA_IMAGE_MIME = '/^image\/(png|jpeg|webp|gif)$/';
 const AIA_TOOL_NAME = '/^[A-Za-z][A-Za-z0-9_-]{0,63}$/';
+/** The finish reason that means "stopped at the max-tokens limit", per protocol (the reply, and maybe a call, was cut off). */
+const AIA_CUT_OFF = ['openai' => 'length', 'anthropic' => 'max_tokens', 'gemini' => 'MAX_TOKENS'];
 
 /** Provider catalog — keep in step with assets/ai-agent/core/providers.js. */
 const AIA_PROVIDERS = [
@@ -933,6 +937,17 @@ function aia_fragments(string $protocol, array $e): array
     return $out;
 }
 
+/** Why the reply ended, when this SSE payload says so ('' otherwise). AIA_CUT_OFF holds each protocol's "max tokens". */
+function aia_finish_reason(string $protocol, array $e): string
+{
+    $r = match ($protocol) {
+        'anthropic' => ($e['type'] ?? '') === 'message_delta' ? ($e['delta']['stop_reason'] ?? '') : '',
+        'gemini' => $e['candidates'][0]['finishReason'] ?? '',
+        default => $e['choices'][0]['finish_reason'] ?? '',
+    };
+    return is_string($r) ? $r : '';
+}
+
 /** Add one streamed tool-call piece to the calls collected so far (keyed by the provider's index). */
 function aia_tool_piece(array &$calls, array $p): void
 {
@@ -1095,7 +1110,7 @@ function aia_chat(array $t, array $req, array $cfg, array $tools = [], array $tu
     $keepalive = (float) $cfg['keepalive'];
     aia_begin_stream($cfg['timeout']);
 
-    $s = ['buffer' => '', 'status' => 0, 'errorBody' => '', 'produced' => false, 'streamError' => '', 'last' => microtime(true), 'gone' => false, 'tools' => []];
+    $s = ['buffer' => '', 'status' => 0, 'errorBody' => '', 'produced' => false, 'streamError' => '', 'last' => microtime(true), 'gone' => false, 'tools' => [], 'finish' => ''];
 
     $ch = curl_init($url);
     curl_setopt_array($ch, [
@@ -1149,6 +1164,10 @@ function aia_chat(array $t, array $req, array $cfg, array $tools = [], array $tu
                     $event = json_decode($payload, true);
                     if (!is_array($event)) {
                         continue;
+                    }
+                    $finish = aia_finish_reason($t['protocol'], $event);
+                    if ($finish !== '') {
+                        $s['finish'] = $finish;
                     }
                     try {
                         foreach (aia_fragments($t['protocol'], $event) as [$type, $text]) {
@@ -1222,9 +1241,18 @@ function aia_chat(array $t, array $req, array $cfg, array $tools = [], array $tu
         if ($call['signature'] !== '') {
             $event['signature'] = $call['signature'];
         }
+        // The arguments as the model wrote them, so the browser can tell a broken or cut-off call from a good one.
+        // (Gemini sends them as an object: there is no text of the model's to pass on.)
+        if ($call['args'] !== '' && $t['protocol'] !== 'gemini') {
+            $event['raw'] = $call['args'];
+        }
         aia_sse('tool_call', $event);
     }
-    aia_sse('done', ['provider' => $t['id'], 'model' => $t['model']]);
+    $done = ['provider' => $t['id'], 'model' => $t['model']];
+    if ($s['finish'] === (AIA_CUT_OFF[$t['protocol']] ?? null)) {
+        $done['truncated'] = true;
+    }
+    aia_sse('done', $done);
 }
 
 /** An error after the stream started: an SSE `error` event (with details only for requests from this computer). */
