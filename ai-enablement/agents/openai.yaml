@@ -1,6 +1,6 @@
 interface:
-  display_name: "Add AI (agent drawer)"
-  short_description: "Build a screen-aware AI chat drawer (tools, memory, screenshots; any LLM) into a web app, or upgrade one"
-  default_prompt: "Use $add-ai-skill on this application: if it has no AI agent yet, build one (a right-hand chat drawer that sees the current page, can act through tools, remembers notes and can look at screenshots); if it already has one, add only what is missing."
+  display_name: "AI Enablement"
+  short_description: "Install, upgrade and extend an app's AI: the screen-aware agent drawer, tools and toolsets, Agent Skills, agents and permissions (any LLM)"
+  default_prompt: "Use $ai-enablement on this application: detect what of its AI layer is already there; install the agent drawer if there is none, upgrade it if it is older, otherwise validate it — then add what I ask for (a tool, a toolset, a skill, an agent), keeping the app's own customisations."
 policy:
   allow_implicit_invocation: true

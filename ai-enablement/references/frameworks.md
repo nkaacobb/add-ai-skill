@@ -36,6 +36,20 @@ In frameworks, prefer a button in your own component that calls `agent.toggle()`
 
 ---
 
+## Where the capability folder goes (every stack)
+
+The runtime fetches `ai/index.json`, skills and agents, and imports tool modules, so the folder must be **served**:
+
+| Stack | Capability folder | Tool modules |
+| --- | --- | --- |
+| Plain HTML / PHP / server-rendered | next to the other static assets: `assets/ai/`, `public/ai/` | in `ai/tools/`, loaded by the index |
+| Vite (React, Vue, Svelte), CRA | `public/ai/` (served as-is) | in `public/ai/tools/` (they reach the app only through `host`), or imported in the integration module and passed as `tools` |
+| Next.js | `public/ai/` | the same; the integration module is a client component |
+| Angular | `src/assets/ai/` (copied to the build) | the same |
+
+`capabilities: '/ai/index.json'` (an absolute path is safest in routed apps). `host` is whatever the stack's tools
+need: the Redux/Pinia/Svelte store, an Angular service, the editor instance.
+
 ## Plain HTML / vanilla SPA
 
 ```html

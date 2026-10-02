@@ -1,4 +1,5 @@
-// Type declarations for the ai-agent-drawer runtime (ai-agent.js). Plain JS at runtime; these are for TS/IDE users.
+// Type declarations for the AI Enablement runtime (ai-agent.js, the agent drawer). Plain JS at runtime; these are for
+// TS/IDE users.
 
 /** A value, or a (possibly async) function that returns it. Hooks are called when the agent needs them. */
 export type Hook<T> = T | (() => T | Promise<T>);
@@ -49,31 +50,183 @@ export interface ToolParameter extends Omit<BlockField, 'type'> {
   /** For 'array': the item field (default string). */
   items?: Omit<BlockField, 'aliases'>;
   maxItems?: number;
+  minItems?: number;
+  /** For 'string': at least this many characters, and a regular expression (Unicode) the value must match. */
+  minLength?: number;
+  pattern?: string;
 }
 
-/** A function of the host app the agent may call. See references/tools.md. */
+/**
+ * What a tool can do — it decides whether the user is asked first (core/permissions.js):
+ * read runs without asking · write asks first (confirmWrites) · destructive and external always ask
+ * (confirmDestructive) · system always asks, whatever the settings or allow rules say.
+ */
+export type ToolEffect = 'read' | 'write' | 'destructive' | 'external' | 'system';
+
+/** A JSON Schema object describing a tool's input, as MCP's inputSchema (the subset that can be enforced). */
+export interface JsonSchemaObject {
+  type?: 'object';
+  properties?: Record<string, Record<string, unknown>>;
+  required?: string[];
+  [key: string]: unknown;
+}
+
+/** MCP tool annotations. The effect is derived from them when the tool states none. */
+export interface ToolAnnotations {
+  title?: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
+/** A function of the host app the agent may call. See references/tools.md and references/framework.md. */
 export interface ToolDefinition {
   /** Letters, digits, _ or -, starting with a letter; unique. */
   name: string;
-  /** Shown in the chat and in Settings > Tools (default: from the name). */
+  /** Shown in the chat and in Settings > Tools (default: annotations.title, else from the name). */
   title?: string;
   /** What it does, in the user's words — the model reads this to decide when to call it. */
   description: string;
+  /** The input in the runtime's field shorthand… */
   parameters?: Record<string, ToolParameter>;
-  /** read: runs without asking · write: asks first (confirmWrites) · destructive: always asks (confirmDestructive). Default 'write'. */
-  effect?: 'read' | 'write' | 'destructive';
+  /** …or as JSON Schema (MCP's inputSchema). Give one of the two. */
+  inputSchema?: JsonSchemaObject;
+  /** Optional: a JSON Schema of the structured result (kept for MCP export). */
+  outputSchema?: Record<string, unknown>;
+  /** Default 'write' (or what `annotations` imply). */
+  effect?: ToolEffect;
+  annotations?: ToolAnnotations;
   /** Page ids where it can be used ('orders/*' = any sub-page). Default: everywhere. */
   pages?: string | string[];
   /** Whether it can be used right now (e.g. a row is selected). */
   when?: () => boolean;
-  /** Groups the Settings > Tools list. */
+  /** Groups the Settings > Tools list (default: its toolset's title). */
   group?: string;
+  /** The toolset that declares it (set by toolset modules). */
+  toolset?: string;
   /** On before the user or toolsConfig decides. Default false. */
   enabled?: boolean;
   /** Default 30000. */
   timeoutMs?: number;
-  /** The app's own function. Its return value goes to the model (strings as written, else compact JSON, max 4,000 chars). */
-  run: (args: Record<string, any>, ctx: { agent: AiAgent; signal?: AbortSignal; call: { id: string; name: string } }) => unknown;
+  /**
+   * The app's own function. `host` is the object passed as createAiAgent({ host }). Its return value goes to the model
+   * (strings as written, else compact JSON, max 4,000 chars).
+   */
+  run: (args: Record<string, any>, ctx: { host: any; agent: AiAgent; signal?: AbortSignal; call: { id: string; name: string } }) => unknown;
+}
+
+/** A named collection of tools: the tools themselves (a toolset module) or the names of tools defined elsewhere. */
+export interface ToolsetDefinition {
+  name: string;
+  title?: string;
+  description?: string;
+  tools: Array<ToolDefinition | string>;
+}
+
+/** allow / ask / deny rules: tool names, name_* wildcards, toolset:<name>, effect:<effect>. deny > ask > allow. */
+export interface PermissionPolicy {
+  allow?: string[];
+  ask?: string[];
+  deny?: string[];
+}
+
+/** A skill (Agent Skills format) given inline; usually a SKILL.md in the capability folder instead. */
+export interface SkillDefinition {
+  name: string;
+  description: string;
+  /** The instructions (Markdown). */
+  body?: string;
+  instructions?: string;
+  /** The whole SKILL.md text, instead of the fields above. */
+  text?: string;
+  /** URL of the skill's folder (ending with /), for read_skill_file. */
+  base?: string;
+  allowedTools?: string | string[];
+}
+
+/** An agent given inline; usually agents/<name>.md in the capability folder instead (the same fields as frontmatter). */
+export interface AgentDefinition {
+  name: string;
+  description: string;
+  title?: string;
+  /** The agent's instructions (Markdown). */
+  instructions?: string;
+  /** The whole agent file text, instead of the fields above. */
+  text?: string;
+  /** Omit tools and toolsets: every tool. */
+  tools?: string[];
+  toolsets?: string[];
+  /** Omit: every skill. */
+  skills?: string[];
+  permissions?: PermissionPolicy;
+  /** Context layers it receives. Default all: ['app', 'page', 'screen', 'view']. */
+  context?: Array<'app' | 'page' | 'screen' | 'view'>;
+  /** on (default) · read: sees the notes, cannot save · off. */
+  memory?: 'on' | 'read' | 'off' | boolean;
+  maxToolSteps?: number;
+  /** A preference shown to the user; not applied automatically. */
+  model?: string;
+  welcome?: string;
+  suggestions?: string[];
+  default?: boolean;
+}
+
+/** The capability index (ai/index.json). Entries are paths relative to the index, or inline definitions. */
+export interface CapabilityIndex {
+  format?: 'ai-enablement/1';
+  agents?: Array<string | AgentDefinition>;
+  skills?: Array<string | SkillDefinition>;
+  tools?: Array<string | ToolDefinition>;
+  toolsets?: Array<string | ToolsetDefinition>;
+  toolsConfig?: string;
+  memory?: string;
+  permissions?: PermissionPolicy;
+  defaultAgent?: string;
+}
+
+export interface AgentInfo {
+  name: string;
+  title: string;
+  description: string;
+  active: boolean;
+  /** The application's one agent when it defines none. */
+  implicit: boolean;
+  tools: string[] | null;
+  toolsets: string[] | null;
+  skills: string[] | null;
+  model: string;
+  memory: 'on' | 'read' | 'off';
+  context: { app: boolean; page: boolean; screen: boolean; view: boolean };
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  /** 'builtin': ships with the runtime (create-tool, while the workspace is connected). */
+  source: 'app' | 'builtin';
+  active: boolean;
+  allowedTools: string[];
+}
+
+export interface WorkspaceInfo {
+  url: string;
+  version: string;
+  root: string;
+  /** The capability folder, relative to the application folder. */
+  aiDir: string;
+  index: string;
+  writable: string[];
+}
+
+/** An MCP tool descriptor (agent.tools.mcp()). */
+export interface McpTool {
+  name: string;
+  title: string;
+  description: string;
+  inputSchema: JsonSchemaObject;
+  outputSchema?: Record<string, unknown>;
+  annotations: ToolAnnotations;
 }
 
 /** The app's default tool selection (ai-tools.json); Settings > Tools > "Download ai-tools.json" writes it. */
@@ -90,13 +243,18 @@ export interface ToolInfo {
   name: string;
   title: string;
   description: string;
-  effect: 'read' | 'write' | 'destructive';
+  effect: ToolEffect;
   group: string;
   pages: string[];
+  toolsets: string[];
   /** Turned on (settings > toolsConfig > the tool's own default). */
   enabled: boolean;
   /** Usable on the current page right now. */
   available: boolean;
+  /** What the permission rules in force (the app's and the active agent's) say. */
+  permission: 'allow' | 'ask' | 'deny' | 'default';
+  /** The active agent may use it (its tools/toolsets, not denied). */
+  agent: boolean;
 }
 
 /** A note the agent keeps between conversations (Settings > Memory). */
@@ -154,11 +312,36 @@ export interface AgentSettings {
   memoryEnabled: boolean;
   /** The agent may save, correct and delete memories when the user asks (built-in tools remember / forget). Default true. */
   memoryWrite: boolean;
-  /** The model accepts images: the camera button and screenshots are offered. Default true. */
+  /** The model accepts images: the camera button, screenshots and attached image files are offered. Default true. */
   vision: boolean;
   /** The agent may take a screenshot on its own (built-in tool take_screenshot). Default false: only the camera button. */
   screenshotAuto: boolean;
+  /** Attached files are cut to this many characters of text (the model is told). Default 40000 (1000–400000). */
+  maxFileChars: number;
 }
+
+/** What an attached file became, for the 'attach' event and agent.attach(). */
+export interface AttachmentInfo {
+  /** 'image' (sent as a picture, like a screenshot), or the document kind read as text. */
+  kind: 'image' | 'text' | 'pdf' | 'docx' | 'xlsx' | 'pptx' | 'odt' | 'ods' | 'odp' | 'rtf' | string;
+  name: string;
+  size: number;
+  /** Images: the size sent to the model (scaled to screenshotMaxEdge). */
+  width?: number;
+  height?: number;
+  /** Documents: characters of text sent (after Max file content), of how many, and whether it was cut. */
+  chars?: number;
+  totalChars?: number;
+  truncated?: boolean;
+  /** Documents: "PDF", "Word document", "CSV"… */
+  label?: string;
+}
+
+/**
+ * The app's own reader for attached files, tried before the built-in ones: return the file's text (or { text, label }),
+ * or null/undefined to let the runtime read it. Throwing refuses the file with that message.
+ */
+export type FileReaderHook = (file: File, info: { kind: string; name: string }) => string | { text: string; label?: string } | null | undefined | Promise<string | { text: string; label?: string } | null | undefined>;
 
 export interface CodeBlock { language: string; code: string }
 
@@ -301,8 +484,29 @@ export interface AiAgentOptions {
   relayProbe?: boolean | string | { url?: string; timeoutMs?: number };
   /** Settings > Context warns (for local models) when the first request is estimated above this many tokens. Default 3000. */
   contextWarnTokens?: number;
-  /** The app's tool catalog (references/tools.md). */
-  tools?: ToolDefinition[];
+  /** The app's tool catalog (references/tools.md): tools and toolsets, or (host) => that list. */
+  tools?: Array<ToolDefinition | ToolsetDefinition> | ((host: any) => Array<ToolDefinition | ToolsetDefinition>);
+  /** The object tools call: run(args, { host }). Usually the app's store or service layer. */
+  host?: any;
+  /**
+   * The capability index (AI Enablement): a URL such as 'ai/index.json', or an index object. It names the agents,
+   * skills, tool modules, toolsets, tool config, memory file and permissions; `agent.capabilities.reload()` loads it again.
+   */
+  capabilities?: string | CapabilityIndex | null;
+  /** Agents, skills and toolsets given inline (added to the index's; inline wins on a name clash). */
+  agents?: AgentDefinition[];
+  skills?: SkillDefinition[];
+  toolsets?: ToolsetDefinition[];
+  /** The application's permission rules (merged with the index's and the active agent's). */
+  permissions?: PermissionPolicy | null;
+  /** The agent to start with (default: the index's defaultAgent, else the one marked default, else the first). */
+  agent?: string;
+  /**
+   * Development only: true (same origin, /ai-workspace) or the URL of the skill's scripts/workspace.mjs server. When
+   * it answers, the agent can read the app's source and write in its capability folder (each write confirmed).
+   * Without that server nothing happens. Default false.
+   */
+  workspace?: boolean | string;
   /** The app's default tool selection: a URL (e.g. 'ai-tools.json'), an object, or a (possibly async) function. */
   toolsConfig?: string | ToolsConfig | Promise<ToolsConfig> | (() => ToolsConfig | Promise<ToolsConfig>) | null;
   /**
@@ -331,8 +535,16 @@ export interface AiAgentOptions {
    * A canvas returned synchronously is read at once, so a WebGL canvas works when the hook renders a frame first.
    */
   screenshot?: ((info: { reason: 'user' | 'agent' }) => ScreenshotSource | Promise<ScreenshotSource>) | null;
-  /** Screenshots are scaled down so their longer edge is at most this many pixels. Default 1280. */
+  /** Screenshots (and attached image files) are scaled down so their longer edge is at most this many pixels. Default 1280. */
   screenshotMaxEdge?: number;
+  /**
+   * The + button left of the message field (and drag and drop, paste): attach images, sent to a model that sees them
+   * exactly like a screenshot, and files, read in the browser and sent as text — PDF, Word, Excel, PowerPoint,
+   * OpenDocument, RTF, and text/code/CSV/JSON files. Default true; false removes it.
+   */
+  attachments?: boolean;
+  /** The app's own reader for file formats the runtime does not read (or reads differently). See FileReaderHook. */
+  readFile?: FileReaderHook | null;
   codeActions?: CodeAction[];
   replyActions?: ReplyAction[];
   /**
@@ -358,15 +570,21 @@ export interface AiAgentOptions {
  * 'tool-state': { name, enabled }.
  * 'memory' detail: { memories: Memory[], change: { type: 'add'|'update'|'remove'|'replace'|'clear'|'base', id? } }.
  * 'screenshot' detail: { by: 'user'|'agent', width, height, source: 'app'|'screen' }.
+ * 'attach' detail: AttachmentInfo (a file attached and read, waiting in the composer).
+ * 'send' detail: { text, attached, reason, hash, images, files: string[] }.
+ * 'agent' detail: { name, title } (the user or agents.use() switched agent).
+ * 'skill' detail: { name, via: 'tool'|'slash'|'api' } (a skill became active in this conversation).
+ * 'capabilities' detail: { problems: string[], version } (the capability index was loaded or reloaded).
+ * 'workspace' detail: WorkspaceInfo (the development workspace answered).
  */
-export type AgentEvent = 'open' | 'close' | 'send' | 'reply' | 'error' | 'context' | 'settings' | 'relay' | 'tool' | 'tool-state' | 'memory' | 'screenshot';
+export type AgentEvent = 'open' | 'close' | 'send' | 'reply' | 'error' | 'context' | 'settings' | 'relay' | 'tool' | 'tool-state' | 'memory' | 'screenshot' | 'attach' | 'agent' | 'skill' | 'capabilities' | 'workspace';
 
 export interface AiAgent {
   open(): void;
   close(): void;
   toggle(): void;
   isOpen(): boolean;
-  /** Ask a question as if the user typed it (opens the drawer). */
+  /** Ask a question as if the user typed it and pressed Send (opens the drawer): what waits in the composer goes along. */
   ask(text: string): Promise<void>;
   /** Stop the reply that is streaming. */
   stop(): void;
@@ -383,14 +601,14 @@ export interface AiAgent {
   /** Recompute the flag now. */
   refreshContext(): Promise<ContextStatus>;
   getContextStatus(): ContextStatus;
-  /** Resolves (to the agent) once async `defaults` and the relay probe have been applied. Resolves at once without them. */
+  /** Resolves (to the agent) once async `defaults`, the capability index, the tool config, the memory file, the relay probe and the workspace check are done. */
   ready: Promise<AiAgent>;
   /** What the relay probe found, or null (no relayProbe, or not finished yet). */
   relayInfo(): RelayInfo | null;
   tools: {
     /** Every tool known now (app-wide + this page), with its state. */
     list(): ToolInfo[];
-    register(defs: ToolDefinition | ToolDefinition[]): void;
+    register(defs: ToolDefinition | ToolsetDefinition | Array<ToolDefinition | ToolsetDefinition>): void;
     unregister(name: string): void;
     /** Turn a tool on/off for this user (saved like Settings > Tools). */
     setEnabled(name: string, on: boolean): void;
@@ -398,7 +616,35 @@ export interface AiAgent {
     run(name: string, args?: Record<string, unknown>): Promise<string>;
     /** The current selection as an ai-tools.json object. */
     exportConfig(): ToolsConfig;
+    /** The toolsets, with the names of their tools. */
+    toolsets(): Array<{ name: string; title: string; description: string; tools: string[] }>;
+    /** Every tool as an MCP tool descriptor. */
+    mcp(): McpTool[];
   };
+  agents: {
+    list(): AgentInfo[];
+    /** The active agent's name ('default' for the implicit one). */
+    current(): string;
+    /** Switch agent; the conversation so far is saved and a new one starts. false when there is no such agent (or a reply is streaming). */
+    use(name: string): boolean;
+  };
+  skills: {
+    /** The skills the active agent may use. */
+    list(): SkillInfo[];
+    /** Activate a skill in this conversation (as /name would). false when the agent has no such skill. */
+    activate(name: string): boolean;
+    active(): string[];
+  };
+  capabilities: {
+    /** Load the capability index again — fresh copies of every file and module. Resolves to the problems found. */
+    reload(): Promise<string[]>;
+    /** What did not load or does not add up (also printed to the console once). */
+    problems(): string[];
+    /** The index URL, or null without one. */
+    index(): string | null;
+  };
+  /** The development workspace when it answered, else null. */
+  workspace(): WorkspaceInfo | null;
   /** The notes kept between conversations; null with `memory: false`. Changes are saved at once and fire 'memory'. */
   memory: {
     list(): Memory[];
@@ -417,6 +663,11 @@ export interface AiAgent {
    * browser's screen capture, call it from a click handler. Resolves to null when none was taken.
    */
   screenshot(): Promise<{ width: number; height: number; source: 'app' | 'screen' } | null>;
+  /**
+   * Attach files to the next question, as the + button does: images as pictures (for a model that sees them), other
+   * files as their text. One result per file; null for a file that could not be attached (the chat says why).
+   */
+  attach(files: File | Blob | FileList | Array<File | Blob>): Promise<Array<AttachmentInfo | null>>;
   /** Subscribe to the flag; called immediately with the current status. Returns an unsubscribe function. */
   onContextStatus(fn: (status: ContextStatus) => void): () => void;
   /** Force the page to be re-sent with the next question. */
@@ -458,6 +709,22 @@ export function probeRelay(url: string, options?: { timeoutMs?: number; headers?
 /** Memories from an ai-memory.json object (or a plain array); entries without an id get one. */
 export function parseMemoryFile(json: unknown): Memory[];
 export function exportMemoryFile(memories: Memory[]): MemoryFile;
+
+/** A tool definition as an MCP tool descriptor. */
+export function toMcpTool(tool: ToolDefinition): McpTool;
+/** A JSON Schema input object -> the runtime's field shorthand. Throws on what cannot be enforced (nested objects, $ref…). */
+export function fromJsonSchema(schema: JsonSchemaObject, where?: string): Record<string, ToolParameter>;
+/** Load a capability index (what createAiAgent({ capabilities }) does), e.g. to check it in tests. */
+export function loadCapabilities(source: string | CapabilityIndex, options?: {
+  base?: string; host?: any; bust?: string | number;
+  fetchText?: (url: string) => Promise<string>; importModule?: (url: string) => Promise<any>;
+}): Promise<{ url: string; tools: ToolDefinition[]; toolsets: Array<{ name: string; title: string; description: string; tools: string[] }>; skills: SkillInfo[]; agents: AgentInfo[]; toolsConfig: string | object | null; memory: string | object | null; permissions: Required<PermissionPolicy>; defaultAgent: string; problems: string[] }>;
+/** A SKILL.md file -> { skill, problems } (skill null when unusable). */
+export function parseSkill(text: string, options?: { base?: string; folder?: string; source?: 'app' | 'builtin' }): { skill: (SkillDefinition & { body: string; allowedTools: string[] }) | null; problems: string[] };
+/** An agent file (Markdown + YAML frontmatter) -> { agent, problems }. */
+export function parseAgent(text: string, options?: { file?: string }): { agent: AgentDefinition | null; problems: string[] };
+/** Markdown with YAML frontmatter -> { data, body, errors }. */
+export function parseFrontmatter(text: string): { data: Record<string, unknown>; body: string; errors: string[] };
 
 export function renderMarkdown(markdown: string, options?: { codeActions?: Array<Pick<CodeAction, 'id' | 'label' | 'title' | 'when'>> }): { html: string; code: CodeBlock[] };
 export function hashText(text: string): string;

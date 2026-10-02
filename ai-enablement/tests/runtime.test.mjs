@@ -702,8 +702,8 @@ test('memory: what the model is told', () => {
   assert.match(buildMemoryPrompt({ items: [], enabled: true, canWrite: true }), /\(Nothing is saved yet\.\)/);
   assert.equal(buildMemoryPrompt({ items, enabled: false, canWrite: true }), '', 'memory switched off: nothing is sent');
   const system = buildSystemPrompt({ base: 'B', appText: 'A', pageText: 'P', memoryText: on, toolsText: '== TOOLS ==\nT', vision: true });
-  assert.ok(system.indexOf('Screenshots: an image') < system.indexOf('== MEMORY ==') && system.indexOf('== MEMORY ==') < system.indexOf('== TOOLS =='), 'order: screen rules, vision, memory, tools');
-  assert.doesNotMatch(buildSystemPrompt({ base: 'B' }), /MEMORY|Screenshots:/, 'nothing is added for apps without them');
+  assert.ok(system.indexOf('Images: an image') > 0 && system.indexOf('Images: an image') < system.indexOf('== MEMORY ==') && system.indexOf('== MEMORY ==') < system.indexOf('== TOOLS =='), 'order: screen rules, vision, memory, tools');
+  assert.doesNotMatch(buildSystemPrompt({ base: 'B' }), /MEMORY|Images:|attached_file/, 'nothing is added for apps without them');
 });
 
 test('settings: memory and vision switches have safe defaults', () => {

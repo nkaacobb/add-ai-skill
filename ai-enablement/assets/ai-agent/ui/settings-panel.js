@@ -14,6 +14,7 @@ import { estimateTokens } from '../core/messages.js';
 import { ICONS } from './icons.js';
 import { esc, h, nf, uid, isolateKeys, copyText } from './dom.js';
 import { toolEnabled, toolAvailable, exportToolsConfig } from '../core/tools.js';
+import { decidePermission } from '../core/permissions.js';
 import { exportMemoryFile, parseMemoryFile, memoryText, nextId, MEMORY_LIMITS } from '../core/memory.js';
 import { formatWhen } from './dom.js';
 
@@ -28,7 +29,7 @@ const STATE_TEXT = {
   off: 'Screen sharing is switched off (Agent tab).',
 };
 
-export function createSettingsPanel({ store, defaultPrompt, getContextInfo, relayHeaders, theme = 'auto', mount = document.body, title = 'AI agent', isolate = true, warnTokens = CONTEXT_WARN_TOKENS, relayInfo = () => null, getTools = () => [], pageId = () => null, memory = null, vision = () => null }) {
+export function createSettingsPanel({ store, defaultPrompt, getContextInfo, relayHeaders, theme = 'auto', mount = document.body, title = 'AI agent', isolate = true, warnTokens = CONTEXT_WARN_TOKENS, relayInfo = () => null, getTools = () => [], pageId = () => null, memory = null, vision = () => null, attachments = true, getPolicy = () => null, getCapabilities = () => null }) {
   const memLimits = memory?.limits || MEMORY_LIMITS;
   const id = uid('aia');
   const root = h(`
@@ -93,6 +94,7 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
       </section>
 
       <section class="aia-panel" data-panel="agent" role="tabpanel" id="${id}-p-agent" aria-labelledby="${id}-t-agent" hidden>
+        <div class="aia-section aia-caps" data-f="caps" hidden></div>
         <div class="aia-section">
           <div class="aia-label-row"><span class="aia-label">System prompt</span><button type="button" class="aia-btn aia-btn-ghost aia-btn-sm" data-act="resetPrompt">Restore app default</button></div>
           <textarea data-f="systemPrompt" rows="12" spellcheck="true"></textarea>
@@ -112,6 +114,10 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
           <label class="aia-check"><input type="checkbox" data-f="shareScreen"><span>Share what is on screen with the agent</span></label>
           <label class="aia-field"><span class="aia-label">Max screen content (characters)</span><input type="number" min="1000" max="400000" step="1000" data-f="maxContextChars"></label>
           <p class="aia-note">Larger pages are cut to this size (the agent is told when that happens). About 4 characters make one token.</p>
+        </div>
+        <div class="aia-section"${attachments ? '' : ' hidden'}>
+          <label class="aia-field"><span class="aia-label">Max file content (characters per attached file)</span><input type="number" min="1000" max="400000" step="1000" data-f="maxFileChars"></label>
+          <p class="aia-note">Files you attach with the + button are read in this browser (PDF, Word, Excel, PowerPoint, text…) and their text goes to the agent with your question; longer files are cut to this size, and the agent is told. Local models with a small context need a lower value.</p>
         </div>
       </section>
 
@@ -164,17 +170,21 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
         <div class="aia-section">
           <label class="aia-check"><input type="checkbox" data-f="vision"><span>This model can see images (vision)</span></label>
           <p class="aia-note" data-f="visionModel" hidden></p>
-          <p class="aia-note">Leave it on for models that accept images: most current cloud models, and local vision models. Switch it off for a text-only model: the camera button goes away and questions are answered from the page text alone.</p>
+          <p class="aia-note">Leave it on for models that accept images: most current cloud models, and local vision models. Switch it off for a text-only model: the camera button goes away, images cannot be attached, and questions are answered from text alone.</p>
         </div>
-        <div class="aia-section">
+        <div class="aia-section" data-f="shotsSection">
           <label class="aia-check"><input type="checkbox" data-f="shotsManual"><span>Only take a screenshot when I press the camera button</span></label>
           <p class="aia-note">Untick it to let the agent take a screenshot on its own whenever it thinks seeing the screen would help. While it is ticked the agent can still ask, and you get a button to allow it once or always. Either way, every screenshot shows in the chat as a thumbnail.</p>
         </div>
-        <div class="aia-section">
+        <div class="aia-section" data-f="howSection">
           <h3 class="aia-h3">How screenshots are taken</h3>
           <p class="aia-note" data-f="visionHow"></p>
           <div class="aia-row aia-row-center" data-f="visionLive" hidden><button type="button" class="aia-btn aia-btn-ghost" data-act="visionStop">Stop sharing this tab</button></div>
           <p class="aia-note">A screenshot is sent to the model with your question, like the rest of the conversation. Saved chats keep only a small thumbnail of it.</p>
+        </div>
+        <div class="aia-section" data-f="uploadSection" hidden>
+          <h3 class="aia-h3">Images you attach</h3>
+          <p class="aia-note">Images you add with the + button, drop on the chat or paste go to the model like a screenshot: scaled down, with a thumbnail in the chat. Saved chats keep only the thumbnail.</p>
         </div>
       </section>
 
@@ -303,6 +313,7 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     f('historyMessages').value = draft.historyMessages;
     f('shareScreen').checked = draft.shareScreen;
     f('maxContextChars').value = draft.maxContextChars;
+    f('maxFileChars').value = draft.maxFileChars;
     f('toolsEnabled').checked = draft.toolsEnabled;
     f('confirmWrites').checked = draft.confirmWrites;
     f('confirmDestructive').checked = draft.confirmDestructive;
@@ -388,6 +399,9 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
       : v.method === 'screen'
         ? 'With your browser\'s screen sharing: the first time, the browser asks you to share this tab. When only you take screenshots, sharing stops after each one. When the agent may look on its own, the tab stays shared (the browser shows that) until you stop it or reload the page.'
         : 'Not available here: this browser cannot capture the page (that needs a desktop browser and an https or localhost address), and the application provides no picture of its own.';
+    f('shotsSection').hidden = v.shots === false;
+    f('howSection').hidden = v.shots === false;
+    f('uploadSection').hidden = !v.uploads;
     f('visionLive').hidden = !v.live;
     // What the model server itself says about the model in use, when it says anything (LM Studio does).
     const known = typeof v.modelSees === 'boolean' && v.model && formProvider === store.get().provider;
@@ -396,7 +410,7 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     if (known) f('visionModel').textContent = v.modelSees
       ? `The model server says ${v.model} sees images.`
       : `The model server says ${v.model} is text-only: screenshots would fail or be ignored. Switch this off, or load a vision model.`;
-    f('vision').disabled = v.method === 'none';
+    f('vision').disabled = v.method === 'none' && !v.uploads;
     f('shotsManual').disabled = v.method === 'none';
   }
 
@@ -417,17 +431,47 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     }
     const on = tools.filter(toolOn).length;
     f('toolCount').textContent = `Tools · ${on} of ${tools.length} on`;
-    const effectLabel = { read: 'reads', write: 'changes', destructive: 'destructive' };
-    f('toolList').innerHTML = [...groups.entries()].map(([g, list]) => `<div class="aia-tool-group"><h4>${esc(g)}</h4>${list.map((t) => `
-      <label class="aia-tool-row">
-        <input type="checkbox" data-tool="${esc(t.name)}"${toolOn(t) ? ' checked' : ''}>
+    const effectLabel = { read: 'reads', write: 'changes', destructive: 'destructive', external: 'outside the app', system: 'changes the app' };
+    // The application's (and the active agent's) permission rules: deny blocks a tool, ask always confirms, allow never.
+    const policy = getPolicy();
+    const ruleBadge = {
+      deny: '<span class="aia-badge aia-badge-deny" title="The application does not permit this tool (permissions: deny)">blocked</span>',
+      ask: '<span class="aia-badge aia-badge-ask" title="The application always asks before this tool runs (permissions: ask)">always asks</span>',
+      allow: '<span class="aia-badge aia-badge-allow" title="The application runs this tool without asking (permissions: allow)">no confirmation</span>',
+    };
+    f('toolList').innerHTML = [...groups.entries()].map(([g, list]) => `<div class="aia-tool-group"><h4>${esc(g)}</h4>${list.map((t) => {
+      const rule = policy ? decidePermission(t, policy) : '';
+      return `
+      <label class="aia-tool-row${rule === 'deny' ? ' aia-tool-blocked' : ''}">
+        <input type="checkbox" data-tool="${esc(t.name)}"${toolOn(t) ? ' checked' : ''}${rule === 'deny' ? ' disabled' : ''}>
         <span class="aia-tool-main"><span class="aia-tool-name">${esc(t.title)} <code>${esc(t.name)}</code></span><span class="aia-tool-desc">${esc(t.description)}</span></span>
-        <span class="aia-tool-tags"><span class="aia-badge aia-badge-${esc(t.effect)}">${esc(effectLabel[t.effect] || t.effect)}</span>${toolAvailable(t, here) ? '<span class="aia-badge aia-badge-here">on this screen</span>' : ''}</span>
-      </label>`).join('')}</div>`).join('');
+        <span class="aia-tool-tags"><span class="aia-badge aia-badge-${esc(t.effect)}">${esc(effectLabel[t.effect] || t.effect)}</span>${ruleBadge[rule] || ''}${toolAvailable(t, here) ? '<span class="aia-badge aia-badge-here">on this screen</span>' : ''}</span>
+      </label>`;
+    }).join('')}</div>`).join('');
+  }
+
+  /* ---------------------------------------------------- agents and skills */
+
+  function renderCaps() {
+    const info = getCapabilities();
+    const box = f('caps');
+    const agents = info?.agents || [];
+    const skills = info?.skills || [];
+    box.hidden = !agents.length && !skills.length && !info?.workspace;
+    if (box.hidden) return;
+    const current = agents.find((a) => a.name === info.agent);
+    box.innerHTML = [
+      current ? `<div class="aia-label-row"><span class="aia-label">Agent</span><span class="aia-note">${agents.length} agent${agents.length === 1 ? '' : 's'} · switch with the picker at the top of the panel</span></div>
+        <p class="aia-cap-line"><b>${esc(current.title)}</b> — ${esc(current.description)}${current.model ? ` <span class="aia-badge" title="This agent's preferred model (a hint; Settings > Model decides)">prefers ${esc(current.model)}</span>` : ''}</p>` : '',
+      skills.length ? `<div class="aia-label-row"><span class="aia-label">Skills</span><span class="aia-note">the agent loads one when a request matches it; type /name to start one yourself</span></div>
+        <ul class="aia-cap-list">${skills.map((s) => `<li><code>/${esc(s.name)}</code>${s.active ? ' <span class="aia-badge aia-badge-here">active in this chat</span>' : ''}${s.source === 'builtin' ? ' <span class="aia-badge">built in</span>' : ''} — ${esc(s.description)}</li>`).join('')}</ul>` : '',
+      info.workspace ? `<p class="aia-note">Development workspace connected (${esc(info.workspace.root || 'app')}): the agent can read the source and write in <code>${esc((info.workspace.writable || []).join(', '))}</code>, each write shown to you first.</p>` : '',
+    ].join('');
   }
 
   function setAllTools(pred) {
-    for (const t of getTools()) toolChanges[t.name] = pred(t);
+    const policy = getPolicy();
+    for (const t of getTools()) if (!policy || decidePermission(t, policy) !== 'deny') toolChanges[t.name] = pred(t);
     renderTools();
   }
 
@@ -460,6 +504,7 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
       historyMessages: Math.round(num('historyMessages') ?? 0),
       shareScreen: f('shareScreen').checked,
       maxContextChars: Math.round(num('maxContextChars') ?? 0),
+      maxFileChars: Math.round(num('maxFileChars') ?? draft.maxFileChars),
       rememberKeys: f('rememberKeys').checked,
       toolsEnabled: f('toolsEnabled').checked,
       confirmWrites: f('confirmWrites').checked,
@@ -616,6 +661,7 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     for (const tab of root.querySelectorAll('[data-tab]')) tab.setAttribute('aria-selected', String(tab.dataset.tab === name));
     for (const panel of root.querySelectorAll('[data-panel]')) panel.hidden = panel.dataset.panel !== name;
     if (name === 'tools') renderTools();
+    if (name === 'agent') renderCaps();
     if (name === 'memory') renderMemory();
     if (name === 'vision') renderVision();
     root.querySelector('[data-f="status"]').hidden = name === 'context';
@@ -770,7 +816,10 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     close,
     isOpen,
     refreshContext: () => { if (isOpen() && currentTab === 'context') renderContext(); },
-    refreshTools: () => { if (isOpen() && currentTab === 'tools') renderTools(); else root.querySelector('[data-tab="tools"]').hidden = !getTools().length; },
+    refreshTools: () => {
+      if (isOpen() && currentTab === 'tools') renderTools(); else root.querySelector('[data-tab="tools"]').hidden = !getTools().length;
+      if (isOpen() && currentTab === 'agent') renderCaps();
+    },
     /** The memories changed outside this panel (the agent saved one, the app's file arrived): show them. */
     refreshMemory: () => { if (isOpen() && !memDirty) loadMemory(); },
     refreshVision: () => { if (isOpen()) renderVision(); },

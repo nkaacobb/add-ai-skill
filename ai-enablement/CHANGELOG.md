@@ -1,9 +1,167 @@
 # Changelog
 
-All notable changes to the add-ai-skill skill (it builds the "AI agent drawer" into apps). The skill's version is in
-`package.json`; the runtime (`VERSION` in `assets/ai-agent/ai-agent.js`) and the relays (`AIA_RELAY_VERSION` /
-`RELAY_VERSION`) carry their own, which only change when their code does. `scripts/release-hashes.json` fingerprints
-every released runtime and relay.
+All notable changes to the ai-enablement skill (named add-ai-skill up to 1.6, ai-agent-drawer before 1.1). It
+installs, upgrades and extends an application's AI layer: the agent drawer runtime and the app's capability folder. The
+skill's version is in `package.json`; the runtime (`VERSION` in `assets/ai-agent/ai-agent.js`) and the relays
+(`AIA_RELAY_VERSION` / `RELAY_VERSION`) carry their own, which only change when their code does.
+`scripts/release-hashes.json` fingerprints every released runtime and relay.
+
+## 2.0.0 — AI Enablement: tools, toolsets, skills, agents, permissions, lifecycle, in-app authoring (runtime 1.6.0; relays unchanged at 1.4.0)
+
+The skill is now **ai-enablement**. It still builds the agent drawer into an app, and it now manages the app's whole
+AI layer: first-class tools and toolsets (MCP-compatible), Agent Skills, agents, permissions, a capability folder the
+runtime loads, a lifecycle (install → upgrade → validate → add → reconcile) with a manifest, and a development
+workspace in which the app's own agent writes new tools. Every 1.5 option and method keeps working; apps built with
+add-ai-skill are recognised and upgrade normally. Design notes: `docs/ai-enablement-design.md` in the repository.
+
+### Rename
+
+- The skill folder, its name and its installed copies are `ai-enablement`. The installer no longer removes other
+  installed skills: `add-ai-skill` copies stay until removed on purpose (`-RemoveLegacy` / `--remove-legacy`).
+- Unchanged on purpose, so installed apps and relays keep working: `ai-agent.js`, `createAiAgent`, the `aia-` CSS
+  prefix, `ai-tools.json`, `ai-memory.json`, and the relay protocol (`X-Requested-With: ai-agent-drawer`,
+  `"relay": "ai-agent-drawer"`).
+
+### Runtime 1.6.0
+
+- **Capability folder**: `createAiAgent({ capabilities: 'ai/index.json', host })` loads an index naming tool modules,
+  toolsets, skills, agents, permissions, the tool config and the memory file (`core/capabilities.js`).
+  `agent.capabilities.reload()` loads it again (fresh copies of every module and file, the tool config re-applied).
+  Problems are collected — console, `agent.capabilities.problems()` — never thrown.
+- **Tools**: a JSON Schema `inputSchema` (MCP) as an alternative to `parameters` (the enforceable subset; the rest is
+  refused with the reason — `core/schema.js`); `minLength`, `pattern`, `minItems` enforced; MCP `annotations`
+  accepted and derived; `agent.tools.mcp()` / `toMcpTool()` export MCP descriptors; `run(args, { host, … })` gets the
+  integration's `host`; new effects `external` and `system`.
+- **Toolsets**: modules export `{ name, title, description, tools }`; JSON toolsets group tools defined elsewhere;
+  Settings > Tools groups by them; `agent.tools.toolsets()`.
+- **Permissions** (`core/permissions.js`): `{ allow, ask, deny }` rules (names, `*`, `toolset:`, `effect:`) from the
+  index, the `permissions` option and the active agent; deny > ask > allow > the user's settings; `system` tools always
+  confirm. Denied tools never reach the model; Settings > Tools shows *blocked*, *always asks*, *no confirmation*.
+- **Skills** (`core/skills.js`, Agent Skills format): listed in the system prompt; the model loads one with
+  `use_skill` (then it stays in the system prompt for the conversation, saved with the chat); `/name` in the composer;
+  `read_skill_file` for the files a skill points to. `agent.skills.list()`, `activate()`, `active()`.
+- **Agents** (`core/agents.js`): Markdown files with YAML frontmatter composing instructions, tools, toolsets, skills,
+  permissions, context layers, memory policy and step limits. A picker replaces the drawer title when there are two
+  or more; switching starts a new chat; saved chats remember their agent. `agent.agents.list()`, `current()`, `use()`.
+- **In-app authoring** (`workspace` option, `core/workspace.js`): when the skill's dev server answers, the agent gets
+  `describe_host`, `list_source_files`, `read_source_file`, `search_source`, `write_ai_file` (effect `system`: always
+  confirmed, shown whole or as a diff; creating an existing file is refused; a module without `export default` or with
+  `run(args, host)` is refused with the fix), `reload_capabilities` (reports unregistered tool files and misnamed tool
+  config keys) and the built-in skill `create-tool` (`skills/create-tool/SKILL.md`, shipped in the runtime).
+- Tools may refuse a call before the confirmation card (`precheck`); `confirmHtml` may be async.
+- New exports: `toMcpTool`, `fromJsonSchema`, `loadCapabilities`, `parseSkill`, `parseAgent`, `parseFrontmatter`.
+  New events: `agent`, `skill`, `capabilities`, `workspace`.
+- `agent.ready` also waits for the capability index and the workspace check.
+
+### Skill
+
+- `SKILL.md` is a lifecycle router: detect → install / upgrade / validate → add a capability.
+- New references: `framework.md` (concepts, formats, ownership, permissions, the manifest), `capabilities.md`
+  (create a tool / toolset / skill / agent, context, memory), `in-app-authoring.md`. Updated: `tools.md` (toolset
+  modules, `host`, `inputSchema`, effects), `upgrading.md` (adopting the framework, the 1.6 changes, the manifest),
+  `api.md`, `architecture.md`, `checklist.md`, `frameworks.md` (where the capability folder goes per stack),
+  `memory-and-vision.md`.
+- **Manifest** `ai-enablement.json` replaces `ai-agent.integration.json` (still read): `framework` (runtime and relay
+  — framework-owned) and `capabilities` sections.
+- Scripts: `detect.mjs` (capability folders and missing paths, the manifest or the 1.x record, dev-time folders kept
+  apart, the new features, a relay compared with the skill's own relay version — a 1.4 relay is no longer reported as
+  an upgrade because the runtime is 1.5, — `createAiAgent` mentioned in comments no longer counted); new
+  `validate.mjs`, `scaffold.mjs` (templates in `assets/templates/`), `workspace.mjs`; `verify.mjs` has a
+  *capabilities* check.
+- Hello World runs on the framework: `ai/index.json`, three toolset modules (`document`, `editor` — its tool written
+  as JSON Schema — `file`), skills `proofreading` (with a reference file) and `summarize`, agents `writer` and
+  `proofreader`, an `ask` rule for the file toolset, `ai-enablement.json`; `ai-tools.js` became the toolset modules.
+- Tests: `framework`, `framework-browser` (agents, skills, permissions, saved chats; in-app authoring end to end with a
+  scripted model), `workspace`, `lifecycle`; `detect` and `example` extended. Also tried live with LM Studio and
+  `qwen/qwen3.5-9b`: the in-app agent added working tools from a plain request.
+
+### Upgrading from 1.6 (add-ai-skill) / runtime 1.5
+
+1. Re-copy `assets/ai-agent/` (new files in `core/` and `skills/`). The relays are unchanged.
+2. Behaviour to know about (`references/upgrading.md`, U4): `host` in tool contexts; the AGENT and SKILLS prompt
+   sections (only with agents or skills); permission badges; the agent picker; `agent` and `skills` in saved chats;
+   the new `$comment` of exported tool configs.
+3. Write `ai-enablement.json` from `ai-agent.integration.json` (`references/upgrading.md`, "The manifest").
+4. Offer, do not force, the capability folder (`references/upgrading.md`, "Adopting the framework") — and with it
+   skills, agents, permissions and in-app authoring where they fit.
+
+## 1.6.0 — attachments: the + button (runtime 1.5.0; relays unchanged at 1.4.0)
+
+The user can give the agent an image or a document with the question. A **+** button on the left of the message field
+opens a menu: **Attach an image** and **Upload a file**. Drag and drop onto the drawer and pasting attach the same way.
+All 1.5 options and methods keep working; the relays need no change.
+
+### Images
+
+- An attached image goes to the model **exactly like a screenshot**: the same pipeline (`imageFromFile()` in
+  `ui/capture.js`) makes a JPEG of at most `screenshotMaxEdge` px and a thumbnail; it waits in the composer, shows on the
+  question (click to enlarge), counts toward the 3 images per question, and follows the screenshot rules (the two
+  newest questions with images send them; saved chats keep thumbnails only).
+- The model is told which images are screenshots and which are files, by name (`[Attached to this message: a
+  screenshot of the user's screen (…) and the image file "diagram.png".]`). Questions with screenshots only keep the
+  1.4 wording.
+- Offered while "This model can see images" is on; otherwise *Attach an image* is greyed out with the reason, and an
+  image dropped or picked anyway gets a message saying how to enable it (an SVG is then read as text).
+
+### Files
+
+- Read **in the browser, without dependencies**, and sent as text inside `<attached_file name="…" type="…"
+  chars="…">` blocks (a closing tag inside the file is neutralised):
+  - **PDF** (`core/pdf.js`): page tree, fonts with ToUnicode maps or encodings (WinAnsi, MacRoman, Differences with
+    glyph names), Flate/ASCII filters and PNG predictors, object streams, form XObjects, inline images skipped; line
+    breaks and spaces from text positions; pages marked `--- Page N ---`. Checked on PDFs from Word-style tools,
+    LaTeX-style manuals, CJK licence texts and the browser's own print-to-PDF. Encrypted and scanned (text-less) PDFs
+    are refused with a sentence that says so.
+  - **Word, Excel, PowerPoint, OpenDocument, RTF** (`core/office.js` over a small ZIP reader in `core/bytes.js`):
+    headings and list items, tables as rows, footnotes, text boxes once (not their fallback copy); one CSV section per
+    sheet with dates from their number format; slides in presentation order with speaker notes; RTF in its code pages.
+  - **Text** of any kind (code, CSV, JSON, Markdown, logs, config): UTF-8, UTF-16 with a BOM, else Windows-1252; files
+    with unknown extensions are read when their content is text.
+  - Refused with what to do instead: old binary Office files, iWork, archives, audio/video, other binaries, empty
+    files, files over 25 MB.
+- Each file's text is cut to **Max file content** (Settings > Agent; setting `maxFileChars`, 40,000 by default) and
+  the model is told. 5 files per question. A file stays in the conversation while its question is in the history
+  window; the same content attached again is sent once. Saved chats keep a file's text (dropped from older chats
+  first when storage runs out).
+- The chip on the question opens **the text the agent received**.
+- The system prompt gains an *Attached files* paragraph only while the conversation carries files.
+- The PDF and office readers load with `import()` on first use, so start-up cost does not grow.
+
+### API
+
+- Options `attachments` (default `true`; `false` removes the + button, drop and paste) and `readFile(file, { kind,
+  name })` — the app's own reader, tried first (text, `{ text, label }`, or `null` for the built-in readers).
+- `agent.attach(files)` → one `{ kind, name, size, … }` (or `null`) per file; event `attach`; `send` carries `images`
+  and `files`. Setting `maxFileChars`.
+- `agent.ask(text)` and the welcome suggestions take what waits in the composer along, as Send does.
+- New modules: `core/files.js`, `core/bytes.js`, `core/pdf.js`, `core/office.js`.
+
+### Skill workflow
+
+- `SKILL.md`: the feature, an *Attachments* line in the context plan, step 9 "Memory, vision and attachments",
+  verification and report. `references/memory-and-vision.md` has an *Attachments* section (formats, limits, what to
+  do in an integration, `readFile`, CSP `blob:` for SVGs, relays); `api.md`, `upgrading.md` (U4–U6, the record's
+  `attachments` feature), `checklist.md` (checks and troubleshooting), `architecture.md`, `providers.md`.
+- `scripts/detect.mjs` reports the `attachments` feature, and flags app code that reads files for the agent itself.
+  `scripts/verify.mjs` has an `attachments` check (the menu, one attached text file).
+- The skill description now mentions attachments and is shorter than before.
+- Tests: `tests/files.test.mjs` with documents built in memory (`tests/fixtures/documents.mjs`: DOCX, XLSX, PPTX, ODF,
+  RTF, PDFs with WinAnsi/Differences and Type0/ToUnicode fonts, object streams, forms); in a real browser the + menu
+  with the keyboard, an image and a Word file through the pickers and what the model receives, the file viewer, saved
+  chats, drag and drop, paste, a text-only model, `attach()` + `ask()`, Send while a file is read, `attachments:
+  false`, and a PDF printed by the browser itself.
+
+### Upgrading from 1.5
+
+1. Re-copy `assets/ai-agent/` (four new files in `core/`). The relays are unchanged.
+2. Behaviour changes to know about (`references/upgrading.md`, U4):
+   - The composer has a + button (`.aia-plus`) left of the field; drops on the drawer no longer reach host `drop`
+     listeners; pasted files are attached (a paste that carries text pastes the text).
+   - `agent.ask()` takes the composer's attachments along.
+   - The system prompt's image paragraph starts "Images:" (was "Screenshots:"); tests matching the old text change.
+   - `screenshots: false` keeps Settings > Vision while attachments are on.
+3. Set `defaults.maxFileChars` lower for a default model with a small context; remove app-side "send a file to the
+   agent" code (detect flags it), keeping a reader for the app's own formats as `readFile`.
 
 ## 1.5.0 — tool-call diagnostics (runtime and relays 1.4.0)
 

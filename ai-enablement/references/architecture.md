@@ -1,5 +1,7 @@
 # Architecture
 
+The runtime (the *how*) under the application's capability folder (the *what*, `framework.md`):
+
 ```
 host app ──hooks──▶ ContextManager ──snapshot/hash──▶ conversation.js (planTurn / buildRequestMessages)
    │                    (core/context.js)                           │
@@ -31,14 +33,25 @@ host app ──hooks──▶ ContextManager ──snapshot/hash──▶ conver
 | `core/client.js` | `resolveTarget`, `streamChat` (with fallback), `listModels`, `testConnection`. | no |
 | `core/relay-probe.js` | `probeRelay` (the relay's GET), `relayDefaults`, `adjustForRelay` (keeps saved settings usable). | no |
 | `core/blocks.js` | `parseBlockValues`: values from a fenced block, checked against an allowlisted schema, clamped. | no |
-| `core/tools.js` | Tools: definitions, JSON Schema, argument validation, on/off and availability, the TOOLS prompt section, text-mode blocks, `ai-tools.json` in/out. | no |
+| `core/tools.js` | Tools: definitions (`parameters` or `inputSchema`, effects, annotations), JSON Schema out, MCP descriptors (`toMcpTool`), argument validation, on/off and availability, the TOOLS prompt section, text-mode blocks, `ai-tools.json` in/out. | no |
+| `core/schema.js` | JSON Schema input → the runtime's fields (the enforceable subset; the rest refused with the reason); effects ↔ MCP annotations. | no |
+| `core/permissions.js` | Allow / ask / deny policies (names, wildcards, `toolset:`, `effect:`), merging, the decision, whether to confirm. | no |
+| `core/capabilities.js` | The capability index: loading tool modules, toolsets, skills and agents (fetch and import injected), linking toolsets, checking references. | no |
+| `core/skills.js` | Agent Skills: `SKILL.md` parsing and rules, the SKILLS prompt section, active skills, safe skill-file paths, `/name`. | no |
+| `core/agents.js` | Agent files: parsing, composition (tools, toolsets, skills), context layers, memory policy, the AGENT prompt section. | no |
+| `core/frontmatter.js` | The YAML subset of skill and agent frontmatter (linear, reports what it cannot read). | no |
+| `core/workspace.js` | The development workspace client (probe, list, read, search, write), path checks, the line diff shown before a replacement. | no |
 | `core/memory.js` | Memory: the notes kept between conversations — the app's file as the base, this browser's changes on top, the MEMORY prompt section, `ai-memory.json` in/out. | storage |
+| `core/files.js` | Attachments: what kind a file is, reading it (the app's `readFile` first), limits and refusals, the `<attached_file>` block and stubs the model reads. | no |
+| `core/bytes.js` | Text decoding (UTF-8/16, Windows-1252), DEFLATE via `DecompressionStream`, a small ZIP reader. | no |
+| `core/pdf.js`, `core/office.js` | Text of PDF files (page tree, fonts, ToUnicode, object streams, forms) and of Word / Excel / PowerPoint / OpenDocument / RTF. Loaded with `import()` on first use. | no |
 | `core/transport.js` | `requestJson`, `requestStream` (idle timeout, abort), SSE parser, error codes + guidance, redaction. | no |
 | `core/messages.js`, `core/reasoning.js` | Transcript normalisation and the neutral image format (`images: [{ mime, data }]`); `<think>` splitting. | no |
 | `adapters/*.js` | One per wire protocol: build request, parse stream chunks / whole replies, list models. | no |
-| `ui/drawer.js` | The drawer: toggles, open/close/push, streaming render, receipts, flag, saved chats, resume, actions, errors, the tool loop, the built-in tools (`remember`, `forget`, `take_screenshot`), the camera button and thumbnails. | yes |
-| `ui/capture.js` | Screenshots: the app's `screenshot` hook, or the browser's screen capture of this tab (drawer cropped off); scaled JPEG + thumbnail. | yes |
-| `ui/settings-panel.js` | The modal: Model / Agent / Tools / Memory / Vision / Context tabs, draft + save, load models, test connection. | yes |
+| `ui/drawer.js` | The drawer: toggles, open/close/push, streaming render, receipts, flag, saved chats, resume, actions, errors, the agent picker and the active agent (tools, skills, permissions, context layers, memory policy), the tool loop with permission checks, the built-in tools (`remember`, `forget`, `take_screenshot`, `use_skill`, `read_skill_file`, the workspace tools, `describeHost`), the camera button and thumbnails, the + menu, drag and drop, paste, file chips and the file viewer. | yes |
+| `skills/create-tool/SKILL.md` | The built-in skill for in-app authoring (offered while the workspace answers). | – |
+| `ui/capture.js` | Screenshots: the app's `screenshot` hook, or the browser's screen capture of this tab (drawer cropped off); scaled JPEG + thumbnail. Attached image files take the same road (`imageFromFile`). | yes |
+| `ui/settings-panel.js` | The modal: Model / Agent (with the active agent and its skills) / Tools (with permission badges) / Memory / Vision / Context tabs, draft + save, load models, test connection. | yes |
 | `ui/markdown.js` | Escape-first Markdown renderer with code-block actions. | no (string in/out) |
 | `ui/dialogs.js` | `dialogs: 'dock'`: native modal dialogs shown non-modally beside the open drawer, switch events swallowed. | yes |
 | `ui/layout-check.js` | Dev-time check that the pushed layout fits beside the drawer (`devWarnings`). | yes |
@@ -49,11 +62,14 @@ Outside the runtime:
 | Path | What it is |
 | --- | --- |
 | `assets/relay/relay.php`, `relay.mjs`, `relay.config.example.php` | The relays (same contract, modes and config keys) and the documented config. |
-| `scripts/detect.mjs` | Run first on any app: is the agent there, which version, are the copies unchanged, which workarounds are now redundant. |
+| `scripts/detect.mjs` | Run first on any app: what is there (runtime, relay, integration, capability folders, manifest or 1.x record, dev-time folders), which version, are the copies unchanged, which features are used, which workarounds are now redundant; the lifecycle route. |
+| `scripts/validate.mjs` | Loads a capability folder with the runtime's own modules: errors and warnings; checks the manifest. |
+| `scripts/scaffold.mjs` | Creates a tool, toolset, skill or agent from `assets/templates/` and registers it; never overwrites. |
+| `scripts/workspace.mjs` | The development workspace server (static site + relay + `/ai-workspace`): read the app's source, write in its capability folder. Never deployed. |
 | `scripts/release-hashes.mjs`, `scripts/release-hashes.json` | Fingerprints of every released runtime and relay, so `detect.mjs` can tell unchanged copies from edited ones. |
 | `scripts/verify.mjs` | Drives headless Edge/Chrome through an integration and reports pass/fail per check. |
 | `scripts/lib/cdp.mjs` | Zero-dependency DevTools-protocol driver (Node 22+ global WebSocket), shared by `verify.mjs` and the browser tests. |
-| `tests/` | `runtime` (pure modules), `relay` (both relays + fake upstream), `browser` (real browser: keys, dialogs, tools, memory, screenshots), `example` (Hello World content, tools and memory file), `detect` (upgrade detection). |
+| `tests/` | `runtime` (pure modules), `framework` (frontmatter, schema, permissions, skills, agents, the capability index, the workspace client), `files` (attachment readers), `relay` (both relays + fake upstream), `browser` (real browser: keys, dialogs, tools, memory, screenshots, attachments), `framework-browser` (agents, skills, permissions, in-app authoring end to end), `workspace` (the dev server's rules), `lifecycle` (scaffold, validate), `example` (Hello World), `detect`. |
 
 Everything under `core/` and `adapters/` is DOM-free, which is why the Node relay can import it and the unit tests can
 run without a browser. What needs a browser (`ui/`) is covered by `tests/browser.test.mjs`.
@@ -63,10 +79,13 @@ run without a browser. What needs a browser (`ui/`) is covered by `tests/browser
 1. User presses Enter. `AgentDrawer.send()` checks the configuration (`resolveTarget`) before touching the transcript.
 2. `ContextManager.snapshot()` reads the content hook and fingerprints it; `planTurn()` decides whether to attach it.
 3. The user message is added with its receipt chip (Read the page / Page unchanged); the flag updates.
-4. `buildSystemPrompt()` = editable prompt + app context + page context + screen protocol (+ the screenshot rules
-   for vision models) + memory + tools + formatting rules.
+4. `buildSystemPrompt()` = editable prompt + the active agent's instructions + app context + page context (each as
+   the agent's context layers allow) + screen protocol (+ the attached-files rules while the conversation has files,
+   + the image rules for vision models) + memory (as the agent's memory policy allows) + skills (listed; the active
+   ones in full) + tools (the agent's, minus denied ones) + formatting rules.
 5. `buildRequestMessages()` = history window with the newest snapshot inlined, older ones stubbed, view state last;
-   screenshots attached to the two newest questions that have one go along as images.
+   attached files as `<attached_file>` blocks on their question (a file attached again is sent once); images
+   (screenshots and attached image files) of the two newest questions that have one go along as images.
 6. `streamChat()` → adapter → `requestStream()`; fragments arrive as `text` / `reasoning` events. With tools, the
    reply may end in tool calls: the drawer checks each (on? here? arguments?), asks the user where the settings say
    so, runs the app's function, and sends the results — plus the screen, if it changed — back for another round,
@@ -90,6 +109,13 @@ run without a browser. What needs a browser (`ui/`) is covered by `tests/browser
   capture. Saved chats keep thumbnails, never the images; relays check type, size and count.
 - Keys: sessionStorage by default, never in the settings object, redacted from errors; relay for server-side keys.
 - Keystrokes typed in the agent's UI do not reach host shortcut handlers (`isolateKeys`).
+- Permissions: denied tools never reach the model and cannot be turned on from the chat; `ask` rules confirm every
+  call; `system` tools always confirm. A skill's `allowed-tools` is information, never a pre-approval. Skill files are
+  read only inside the skill's folder; skill scripts are never run.
+- The development workspace (`scripts/workspace.mjs`) is not part of the runtime and never deployed: loopback only,
+  a loopback Host header, the drawer's header, same origin (or listed origins); reads skip hidden files, dependencies
+  and secrets; writes only inside the capability folder, an existing file only with `replace: true`; every write is
+  shown (whole, or as a diff) and confirmed. Without that server the workspace tools do not exist.
 - Relays: local mode (the default) answers only its own computer — a proxied request is never "local" — with an
   upstream allow-list (cloud: catalog address only; local: private hosts only). Public mode is explicit and uses only
   the configured preset and server key, enforces same-origin (no CORS headers), rate-limits per visitor (salted,
@@ -106,4 +132,7 @@ connection test come from another. New in this skill: the app/page/content/view 
 protocol with receipts and the flag, the editable system prompt layered with fixed protocol text, the Context
 inspector, app-defined actions, per-tab resume, streaming for all protocols, the shared relay contract — and, from
 the first real integration (1.1), the max-wait debounce, key isolation, dialog docking, the layout check, the relay
-probe, production relays and the verification tooling; tools (1.2); memory and screenshots for vision models (1.3).
+probe, production relays and the verification tooling; tools (1.2); memory and screenshots for vision models (1.3);
+attachments — images and files from the + button, read in the browser without dependencies (1.5); and, as AI
+Enablement (skill 2.0, runtime 1.6), the capability folder with MCP-compatible tools and toolsets, Agent Skills,
+agents, permissions, and in-app tool authoring through the development workspace.

@@ -1,5 +1,5 @@
 {
-  "$comment": "Hello World's default tool selection (loaded with the toolsConfig option). Users can change it in Settings > Tools; 'Download ai-tools.json' there writes this format.",
+  "$comment": "Hello World's default tool selection, named as \"toolsConfig\" in ai/index.json. Users can change it in Settings > Tools; 'Download ai-tools.json' there writes this format.",
   "toolsEnabled": true,
   "confirmWrites": true,
   "confirmDestructive": true,

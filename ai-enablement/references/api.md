@@ -1,14 +1,16 @@
 # API reference
 
 `import { createAiAgent, fromDom, DEFAULT_SYSTEM_PROMPT } from './ai-agent/ai-agent.js'` and load `ai-agent/ai-agent.css`.
-Types: `assets/ai-agent/ai-agent.d.ts`. Runtime version: `VERSION` (1.4.0). Tools (the agent acting in the app):
-`tools.md`. Memory and screenshots: `memory-and-vision.md`.
+Types: `assets/ai-agent/ai-agent.d.ts`. Runtime version: `VERSION` (1.6.0). Tools (the agent acting in the app):
+`tools.md`. Capabilities — tools, toolsets, skills, agents, permissions, the capability index: `framework.md`.
+Memory, screenshots and attachments (the + button): `memory-and-vision.md`. In-app authoring: `in-app-authoring.md`.
 
 ## createAiAgent(options) → agent
 
 Creates and mounts the toggle wiring (or a floating launcher), the drawer and the settings modal. Call once, in the
-browser, after the DOM exists. It returns synchronously; `agent.ready` resolves once async `defaults` and the relay
-probe (if any) have been applied — questions wait for it automatically.
+browser, after the DOM exists. It returns synchronously; `agent.ready` resolves once async `defaults`, the capability
+index, the tool config, the memory file, the relay probe and the workspace check are done — questions wait for it
+automatically.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
@@ -34,14 +36,22 @@ probe (if any) have been applied — questions wait for it automatically.
 | `devWarnings` | `'auto'` | Console warnings for integration problems: the pushed layout overflows/hides things under the drawer (checked after opening and on resize), a modal dialog makes the drawer inert. `'auto'` = on for `localhost`, `127.x`, `[::1]`, `*.localhost`, `*.test`, `*.local`, `file:`; `true`/`false` force. |
 | `relayProbe` | `false` | `true` (probe `defaults.relayUrl`), a URL, or `{ url, timeoutMs = 2500 }`: GET the relay at startup; if it answers `available`, use it (with its preset provider/model), else send requests directly. See "Relay probe". |
 | `contextWarnTokens` | `3000` | Settings > Context warns (local providers) when the first request is estimated above this. |
-| `tools` | `[]` | The app's tool catalog: `[{ name, title?, description, parameters?, effect: 'read'\|'write'\|'destructive', pages?, when?, group?, enabled?, timeoutMs?, run(args, ctx) }]`. The model calls them; see `tools.md`. Invalid definitions are skipped with a console error. |
-| `toolsConfig` | `null` | The app's default tool selection and switches (`ai-tools.json`): a URL, an object, or a (possibly async) function. Applied like `defaults` (questions wait for it). |
+| `tools` | `[]` | Tools given inline: `[{ name, title?, description, parameters? \| inputSchema?, effect?: 'read'\|'write'\|'destructive'\|'external'\|'system', annotations?, pages?, when?, group?, enabled?, timeoutMs?, run(args, { host, agent, signal, call }) }]`, toolsets (`{ name, title, description, tools }`), or `(host) => that list`. Added to the capability index's (inline wins). Invalid definitions are skipped with a console error. |
+| `toolsConfig` | `null` | The app's default tool selection and switches (`ai-tools.json`): a URL, an object, or a (possibly async) function. Applied like `defaults` (questions wait for it). Default: the index's `toolsConfig`. |
+| `host` | `null` | The object tools call: `run(args, { host })` — the app's store, service layer or instance. Also what `describe_host` shows the in-app agent. |
+| `capabilities` | `null` | The capability index: a URL (`'ai/index.json'`) or an index object (`framework.md`). Loads tool modules, toolsets, skills, agents, permissions, the tool config and the memory file. `agent.capabilities.reload()` loads it again. Problems are collected (console, `agent.capabilities.problems()`), never thrown. |
+| `agents` / `skills` / `toolsets` | `[]` | Given inline, added to the index's (inline wins on a name clash). |
+| `permissions` | `null` | `{ allow, ask, deny }` rules (tool names, `name_*`, `toolset:<name>`, `effect:<effect>`), merged with the index's and the active agent's. deny > ask > allow > the user's settings; `system` tools always ask. |
+| `agent` | `''` | The agent to start with (else the index's `defaultAgent`, the one marked `default`, the first). |
+| `workspace` | `false` | Development only: `true` (`/ai-workspace` on this origin) or the URL of `scripts/workspace.mjs`. When it answers, the agent gets the workspace tools and the `create-tool` skill (`in-app-authoring.md`); otherwise nothing happens. |
 | `memory` | `true` | Notes the agent keeps between conversations: the Settings > Memory tab, the MEMORY section of the system prompt, and the built-in `remember` / `forget` tools. `false` removes all of it (`agent.memory` is then `null`). |
 | `memoryFile` | `null` | The app's starting memories (`ai-memory.json`): a URL, an object, or a (possibly async) function. What a user adds, edits or deletes is kept in their browser on top of it. Applied like `defaults` (questions wait for it). |
 | `memorySave` | `null` | `(file) => void \| Promise`: called (debounced) with the whole memory file after every change made in this browser, for apps whose backend keeps the notes. |
 | `screenshots` | `true` | Screenshots for models that see images: the Settings > Vision tab, the camera button, the built-in `take_screenshot` tool. `false` removes all of it. |
 | `screenshot` | `null` | `({ reason }) => canvas \| image \| video \| ImageBitmap \| ImageData \| Blob \| data URL \| null` (or a promise): the app's own picture of what the user is looking at. Without it, or when it returns `null`, the browser's screen capture of this tab is used. |
-| `screenshotMaxEdge` | `1280` | Screenshots are scaled down so their longer edge is at most this many pixels (256–4096). |
+| `screenshotMaxEdge` | `1280` | Screenshots (and attached image files) are scaled down so their longer edge is at most this many pixels (256–4096). |
+| `attachments` | `true` | The **+** button left of the message field (*Attach an image* · *Upload a file*), plus drag and drop and paste. Images go to a model that sees them exactly like a screenshot; other files are read in the browser and sent as text (PDF, Word, Excel, PowerPoint, OpenDocument, RTF, text/code/CSV/JSON). `false` removes all of it. |
+| `readFile` | `null` | `(file, { kind, name }) => text \| { text, label? } \| null` (or a promise): the app's own reader, tried before the built-in ones. `null` lets the runtime read the file; throwing refuses it with that message. For the app's own formats, or a reader it already ships (pdf.js…). |
 | `codeActions` | `[]` | `[{ id, label, title?, when?(block), run(block, agent), doneLabel? }]` → buttons on fenced code blocks (`block = { language, code }`). Copy is built in. For values the app applies, see `parseBlockValues` and `setControlValue`. |
 | `replyActions` | `[]` | `[{ id, label, title?, run(markdown, agent), doneLabel? }]` → buttons under each reply. *Copy* and *Copy tool log* (shown when the reply has tool rows; ids `copy`, `copy-tools`) are built in. |
 | `defaults` | `{}` | App defaults for any setting (see "Settings"). User choices override them. May be an object, a promise, or a (possibly async) function. |
@@ -77,7 +87,7 @@ agent.setPage({
 | Method | Does |
 | --- | --- |
 | `open()`, `close()`, `toggle()`, `isOpen()` | Drawer visibility. |
-| `ask(text)` | Send a question as the user (opens the drawer). Returns when the reply has finished. |
+| `ask(text)` | Send a question as the user (opens the drawer). Like Send, it takes what waits in the composer along (screenshots, attached images and files; files still being read are waited for). Returns when the reply has finished. |
 | `stop()` | Abort the streaming reply (partial text is kept and marked). |
 | `newChat()` | Save the current chat and start a new one (flag → *unread*). |
 | `openSettings('model' \| 'agent' \| 'tools' \| 'memory' \| 'vision' \| 'context')` | Open the settings modal on a tab. The Context tab shows exactly what the hooks produce, and the estimated size of the first request. |
@@ -90,18 +100,25 @@ agent.setPage({
 | `onContextStatus(fn)` | Subscribe; `fn` runs immediately and on every change. Returns unsubscribe. |
 | `rereadPage()` | Force the next question to carry a fresh snapshot. |
 | `systemPrompt()` | Resolves to the full system prompt as it would be sent now. |
-| `ready` | Promise resolving to the agent once async `defaults` and `relayProbe` are applied (immediately without them). |
+| `ready` | Promise resolving to the agent once async `defaults`, the capability index, the tool config, the memory file, `relayProbe` and the workspace check are done (immediately without them). |
 | `relayInfo()` | What the relay probe found (`{ url, available, mode, preset, providers, serverKeys, images, reason }`), or `null`. |
-| `tools.list()` | Every tool known now (app-wide + this page): `{ name, title, description, effect, group, pages, enabled, available }`. |
-| `tools.register(defs)`, `tools.unregister(name)` | Add/replace or remove app-wide tools at runtime. |
+| `tools.list()` | Every tool known now (app-wide + this page): `{ name, title, description, effect, group, pages, toolsets, enabled, available, permission: 'allow'|'ask'|'deny'|'default', agent }` (`agent`: the active agent may use it). |
+| `tools.register(defs)`, `tools.unregister(name)` | Add/replace (tools, lists or toolsets) or remove app-wide tools at runtime. |
 | `tools.setEnabled(name, on)` | Turn a tool on/off for this user (saved like Settings > Tools). |
 | `tools.run(name, args)` | Run a tool directly (validated arguments, no confirmation, ignores on/off) — for tests and scripted checks. Resolves to the text the model would receive. |
 | `tools.exportConfig()` | The current selection as an `ai-tools.json` object. |
+| `tools.toolsets()` | `[{ name, title, description, tools: [names] }]`. |
+| `tools.mcp()` | Every tool as an MCP tool descriptor `{ name, title, description, inputSchema, annotations, outputSchema? }`. |
+| `agents.list()`, `agents.current()`, `agents.use(name)` | The agents (`{ name, title, description, active, implicit, tools, toolsets, skills, model, memory, context }`; one implicit agent when none are defined), the active one's name, and switching (saves the conversation and starts a new one; `false` when there is no such agent or a reply is streaming). |
+| `skills.list()`, `skills.activate(name)`, `skills.active()` | The active agent's skills (`{ name, description, source: 'app'|'builtin', active, allowedTools }`), activating one in this conversation (as `/name` does), and the active ones. |
+| `capabilities.reload()`, `capabilities.problems()`, `capabilities.index()` | Load the capability index again — fresh copies of every file and module, the tool config and memory file — resolving to the problems found; the current problems; the index URL. |
+| `workspace()` | The development workspace's info (`{ url, root, aiDir, index, writable, version }`) when it answered, else `null`. |
 | `memory.list()` | The memories: `[{ id, text, created, updated?, source: 'user' \| 'agent' \| 'app' }]`. `agent.memory` is `null` with `memory: false`. |
 | `memory.add(text)`, `memory.update(id, text)`, `memory.remove(id)`, `memory.clear()` | Change them (saved at once; the same note is not added twice; at most 100 notes of 500 characters). |
 | `memory.export()`, `memory.import(file, { replace })` | The memories as an `ai-memory.json` object; add the memories of such a file (or make them the whole memory). |
 | `screenshot()` | Take a screenshot and put it in the composer for the next question — what the camera button does. With the browser's screen capture, call it from a click. Resolves to `{ width, height, source: 'app' \| 'screen' }` or `null`. |
-| `on(event, fn)` | Events: `open` (`{}`, or `{ resumed: true }` — see below), `close`, `send` `{text, attached, reason, hash}`, `reply` `{text, provider, model, stopped, actions}` (an action: `{call, title, status, summary, name, detail: {args, sent, problem, result}}`, what its tool row shows rolled down), `error` `{error}`, `context` (status), `settings` (settings), `relay` (relay info), `tool` `{name, args, status: 'ok'\|'error'\|'declined'\|'off'\|'skipped', result}` (`result`: what the tool returned, or why it failed, e.g. *Cut off: …*), `tool-state` `{name, enabled}`, `memory` `{memories, change: {type, id?}}`, `screenshot` `{by: 'user'\|'agent', width, height, source}`. Returns unsubscribe. |
+| `attach(files)` | Attach a `File`, `Blob`, `FileList` or array to the next question — what the + button does. Resolves to one `{ kind, name, size, width?, height?, chars?, totalChars?, truncated?, label? }` per file, or `null` for a file that could not be attached (the chat says why: an image for a text-only model, an old `.doc`, a scanned PDF…). |
+| `on(event, fn)` | Events: `open` (`{}`, or `{ resumed: true }` — see below), `close`, `send` `{text, attached, reason, hash, images, files}`, `reply` `{text, provider, model, stopped, actions}` (an action: `{call, title, status, summary, name, detail: {args, sent, problem, result}}`, what its tool row shows rolled down), `error` `{error}`, `context` (status), `settings` (settings), `relay` (relay info), `tool` `{name, args, status: 'ok'\|'error'\|'declined'\|'off'\|'skipped', result}` (`result`: what the tool returned, or why it failed, e.g. *Cut off: …*), `tool-state` `{name, enabled}`, `memory` `{memories, change: {type, id?}}`, `screenshot` `{by: 'user'\|'agent', width, height, source}`, `attach` (what `attach()` resolves to, once a file is read), `agent` `{name, title}` (switched), `skill` `{name, via: 'tool'|'slash'|'api'}` (activated), `capabilities` `{problems, version}` (loaded or reloaded), `workspace` (its info, once it answered). Returns unsubscribe. |
 | `settings.get()`, `settings.save(patch)`, `settings.reset()`, `settings.setKey(provider, key)` | Programmatic settings. |
 | `destroy()` | Remove everything the agent added. |
 
@@ -154,8 +171,9 @@ if (agent.isOpen()) onOpen();          // safe either way: make onOpen idempoten
 | `toolStates` | `{}` | `{ toolName: true \| false }`, merged over `toolsConfig` and each tool's `enabled`. Only differences from the app defaults are stored. |
 | `memoryEnabled` | `true` | The memories are part of every conversation (Settings > Memory). |
 | `memoryWrite` | `true` | The agent may save, correct and delete memories when the user asks (`remember`, `forget`). Off: the model is told it cannot, and the tools are not offered. |
-| `vision` | `true` | The model sees images: the camera button and screenshots are offered. Set `defaults: { vision: false }` for a text-only default model. A relay without image support switches it off. |
+| `vision` | `true` | The model sees images: the camera button, screenshots and attached images are offered. Set `defaults: { vision: false }` for a text-only default model. A relay without image support switches it off. |
 | `screenshotAuto` | `false` | The agent may take a screenshot on its own (`take_screenshot`). Off: only the camera button; the agent can ask, and the user allows it once or always. |
+| `maxFileChars` | `40000` | Each attached file's text is cut to this many characters (1,000–400,000; Settings > Agent > *Max file content*). The model is told when a file was cut. Lower it for local models with a small context. |
 
 Layering: built-in defaults < `defaults` (applied late when async / probed) < what the user saved.
 
@@ -216,19 +234,26 @@ value or text. Returns `true` when the control now holds the value.
 ## Other exports
 
 `renderMarkdown(md, { codeActions })`, `hashText(str)`, `stableStringify(value)`, `probeRelay(url, { timeoutMs })`,
-`parseMemoryFile(json)`, `exportMemoryFile(memories)`, `DEFAULT_SYSTEM_PROMPT`, `PROVIDERS`, `PROVIDER_IDS`, `AiError`,
-`VERSION`.
+`parseMemoryFile(json)`, `exportMemoryFile(memories)`, `toMcpTool(tool)`, `fromJsonSchema(schema)`,
+`loadCapabilities(source, { base, host, fetchText, importModule, bust })`, `parseSkill(text, { base, folder })`,
+`parseAgent(text, { file })`, `parseFrontmatter(text)`, `DEFAULT_SYSTEM_PROMPT`, `PROVIDERS`, `PROVIDER_IDS`, `AiError`, `VERSION`.
 
 ## Built-in tools
 
-Besides the app's tools (`tools.md`) the runtime has three of its own. They are not listed in Settings > Tools and do
-not follow its master switch; each follows its own setting. An app tool with the same name replaces the built-in one.
+Besides the app's tools (`tools.md`) the runtime has its own. They are not listed in Settings > Tools and do not
+follow its master switch; each follows its own setting. An app tool with the same name replaces the built-in one; a
+`deny` permission rule removes one.
 
 | Tool | Offered when | Asks the user |
 | --- | --- | --- |
 | `remember(text, id?)` | Memory on, and "Let the agent save a memory…" on | No: the chip shows what was saved, with Undo |
 | `forget(id)` | The same | Yes, like a tool that changes something ("Ask me before actions that change something") |
 | `take_screenshot()` | "This model can see images" on and a picture can be taken. Callable when the user freed it; otherwise listed as turned off, so the model can ask for it | Not when freed (with the browser's screen capture: one click to share the tab, once per page load). Otherwise: *Allow once* / *Always allow* / *No* |
+| `use_skill(name)`, `read_skill_file(skill, path, offset?)` | The active agent has skills | No |
+| `describe_host()`, `list_source_files(path?)`, `read_source_file(path, offset?)`, `search_source(query, path?)`, `reload_capabilities()` | The development workspace answered (`workspace`) | No |
+| `write_ai_file(path, content, replace?)` | The same | **Always** (effect `system`): the whole new file, or a diff for a replacement |
+
+An agent with `memory: read` or `off` gets no `remember` / `forget`.
 
 With these, a request carries tool definitions even in an app without tools of its own; a model server without tool
 calling gets them as text blocks (Settings > Tools > "How tools are called", automatic by default).

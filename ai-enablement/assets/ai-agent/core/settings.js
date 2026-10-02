@@ -12,6 +12,7 @@
 import { PROVIDER_IDS, provider } from './providers.js';
 import { DEFAULT_MAX_CONTEXT_CHARS } from './context.js';
 import { DEFAULT_HISTORY_MESSAGES } from './conversation.js';
+import { DEFAULT_MAX_FILE_CHARS } from './files.js';
 
 export const LIMITS = Object.freeze({ url: 400, model: 200, prompt: 20000, key: 512 });
 
@@ -44,6 +45,8 @@ export const SETTINGS_SCHEMA = Object.freeze({
   // Vision (ui/capture.js): screenshots of what the user is looking at.
   vision: ['boolean', true],                                // the model accepts images
   screenshotAuto: ['boolean', false],                       // the agent may take screenshots on its own (else: only the button)
+  // Attachments (core/files.js): files the user attaches are cut to this many characters of text.
+  maxFileChars: ['int', DEFAULT_MAX_FILE_CHARS, [1000, 400000]],
 });
 
 export const DEFAULT_SETTINGS = Object.freeze(Object.fromEntries(

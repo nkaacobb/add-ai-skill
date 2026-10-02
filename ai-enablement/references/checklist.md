@@ -8,7 +8,8 @@ node <skill>/scripts/verify.mjs http://127.0.0.1:8080/ --change "<js that change
 
 Drives headless Edge/Chrome (Node 22+, nothing to install): console errors on load, the hotkey and the flag, the
 toggle, typing a space in the composer, Settings > Context size, the tool catalog, the starting memories, one
-screenshot taken the way the camera button takes it, the pushed layout at 1280/1366/1600 px (with screenshots in
+screenshot taken the way the camera button takes it, the + menu and one attached text file, the pushed layout at
+1280/1366/1600 px (with screenshots in
 `.verify/`), and — with a model running — "Read the page" → synced → change → dirty → re-read →
 "Page unchanged". `--no-llm` skips the questions; `--toggle`, `--agent`, `--widths`, `--question` adjust it; `--help`
 lists everything. Exit code 1 when a check fails. It does not replace looking at the page yourself.
@@ -17,8 +18,14 @@ lists everything. Exit code 1 when a check fails. It does not replace looking at
 
 - [ ] `scripts/detect.mjs` was run first: an app that already had the agent was **upgraded** (`upgrading.md`), not
       given a second one; the `appId` did not change; old saved chats and settings still load.
-- [ ] `ai-agent.integration.json` written or updated at the app's root (versions, files, features, plans, declined
-      features — no secrets).
+- [ ] `ai-enablement.json` written or updated at the app's root (versions, framework files, capability folder,
+      integration files, features, plans, declined features — no secrets); a 1.x `ai-agent.integration.json` was
+      turned into it.
+- [ ] `scripts/validate.mjs <app-root>`: no errors; the warnings read and either fixed or explained.
+- [ ] **Capabilities** (with a capability folder): `verify.mjs` → capabilities lists the intended agents, skills and
+      toolsets and no problems; with two or more agents the title is a picker and switching starts a new chat; a skill
+      loads when its kind of work is asked for (a *Use skill* row) and with `/name`; permission badges in
+      Settings > Tools match the plan (a `deny` tool is *blocked*); development-time folders (`.claude/` …) untouched.
 - [ ] `ai-agent/` copied unchanged; `ai-agent.css` loaded once; the agent created once, client-side.
 - [ ] The integration module is loaded with `import()` and a `.catch()`: the app works if it fails to load.
 - [ ] `appId` is unique to this application.
@@ -60,6 +67,12 @@ lists everything. Exit code 1 when a check fails. It does not replace looking at
       `screenshotAuto` is off. Secure context; no `Permissions-Policy` against `display-capture`; CSP allows
       `img-src data:`. Apps whose screen shows data that must not leave: a hook that draws only what may, or
       `screenshots: false`.
+- [ ] **Attachments**: the + button sits left of the message field and opens *Attach an image* · *Upload a file*
+      (`verify.mjs` → attachments). With a model: a PDF or Word file shows a chip with its type and token estimate,
+      the answer is about its content, and the chip on the question shows the text the agent received; an image is
+      described like a screenshot. `defaults.maxFileChars` suits the default model's context; the app's own formats
+      have a `readFile` hook (or none are needed); a CSP `img-src` allows `blob:` (attached SVGs). Apps whose users'
+      documents must not reach the model provider: `attachments: false`.
 - [ ] Code/reply actions (if any) do what they say, show up even when a small model uses a generic fence tag
       (`json`), clamp values, apply through the app's real controls, and never bypass the app's confirmations.
 - [ ] Light and dark mode both look right; theme overrides on `.aia-scope` apply in both; the toggle's context dot
@@ -103,6 +116,12 @@ A quick console check: `agent.getContextStatus()`, `await agent.systemPrompt()`,
 | The screenshot of a WebGL view is blank (white) | The drawing buffer was already cleared: in the `screenshot` hook render a frame and return the canvas synchronously (or create the context with `preserveDrawingBuffer: true`). |
 | "The screenshot could not be read … tainted canvas" | The canvas drew images from another origin without CORS. Load them with `crossOrigin = 'anonymous'` (and CORS headers), or use the browser's screen capture (return `null` from the hook). |
 | Relay: "cannot pass images" / "too large for this server" with a screenshot | A relay older than 1.3, `maxImages: 0`, or a body limit in front of it: `client_max_body_size` (Nginx), `post_max_size` (PHP), `LimitRequestBody` (Apache). |
+| No + button | `attachments: false`, or an app stylesheet hides `.aia-plus`. |
+| *Attach an image* is greyed out | "This model can see images" is off (Settings > Vision, or `defaults.vision: false`). Files can still be attached. |
+| A PDF is refused as "probably scanned" | It has no text layer (pages are pictures). Attach pictures of the pages to a vision model, or OCR it first. Encrypted PDFs are refused too. |
+| An attached file is refused ("Old Word files…", "an archive…") | Old binary Office formats, iWork, archives, audio/video are not read: the message says what to save it as. For the app's own formats, add a `readFile` hook. |
+| The request fails, or the answer ignores most of a long file, after attaching it | The model's context is too small for the file (the error lists the attached files as a cause). Lower Settings > Agent > *Max file content* (`maxFileChars`), load the local model with more context, or start a new chat (files stay in the conversation while their question is in the history window). |
+| A file's text looks scrambled or has gaps | A PDF font without a Unicode map (the file view says so), or a layout the reader orders differently. Click the chip to see what the agent received; an app that ships pdf.js can pass it as the `readFile` hook. |
 | Model says it cannot see the page | Settings > Agent > "Share what is on screen" is off, or the page has no `content` hook (flag shows *none*). Check Settings > Context. |
 | Answers about the wrong page | `setPage` not called on navigation, or called with the previous page's hooks. |
 | Open-time setup does not run after a reload | `resume` reopened the drawer during `createAiAgent()`. Register `on('open')` in the same tick (it is replayed with `{ resumed: true }`), or check `agent.isOpen()` after creating the agent. |
@@ -135,7 +154,13 @@ From the skill folder: `node --test` (or `npm test`). No model needed.
   isolation, dialog docking, the layout warning, theme overrides, resume, `setControlValue`, the probe on a static
   server, the context-size warning, the tool loop, memory end to end (remember, forget, Undo, Settings > Memory),
   and screenshots (a WebGL `screenshot` hook, the agent asking to look, and the browser's real screen capture with the
-  drawer cropped off).
+  drawer cropped off), and attachments (the + menu with the keyboard, an image and a Word file through the file
+  pickers, what the model receives, the file viewer, saved chats; drag and drop, paste, a text-only model,
+  `attach()` + `ask()`, Send while a file is being read, `attachments: false`; a PDF printed by the browser itself).
+- `tests/files.test.mjs` — the attachment readers on documents built in memory (`tests/fixtures/documents.mjs`):
+  file kinds, text encodings, limits and refusals, the `readFile` hook, ZIP, Word, Excel (dates, CSV), PowerPoint
+  (presentation order, notes), OpenDocument, RTF code pages, PDF (encodings, ToUnicode, object streams, forms,
+  kerning; encrypted and scanned files), and how files and image files reach the model and the prompt.
 - `tests/example.test.mjs` — the Hello World content builders, tools and memory file (the tests every integration
   should have).
 - `tests/detect.test.mjs` — `scripts/detect.mjs` on fixture apps (fresh, current, older/edited runtime, 1.0 relay

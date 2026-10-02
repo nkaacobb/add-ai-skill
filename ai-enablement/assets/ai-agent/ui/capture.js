@@ -13,6 +13,7 @@
 //      page shows up in the stream within a frame or two, a static page produces no new frames.
 //
 // The result is always a JPEG scaled so its longer edge is at most `maxEdge`, plus a small thumbnail for the chat.
+// Image files the user attaches (the + button, drag and drop, paste) take the same road: imageFromFile().
 
 export const CAPTURE_DEFAULTS = Object.freeze({ maxEdge: 1280, quality: 0.82, thumbEdge: 220, maxChars: 2400000 });
 
@@ -97,6 +98,49 @@ function encode(canvas, o) {
 
 let shotSeq = 0;
 
+function captureOptions(maxEdge, quality) {
+  const o = { ...CAPTURE_DEFAULTS };
+  if (Number(maxEdge) >= 256) o.maxEdge = Math.min(4096, Math.round(Number(maxEdge)));
+  if (Number(quality) > 0 && Number(quality) <= 1) o.quality = Number(quality);
+  return o;
+}
+
+/** Decode an image file: createImageBitmap, or an <img> for what it refuses (SVG). */
+async function decodeImage(blob) {
+  if (typeof createImageBitmap === 'function' && !/svg/i.test(blob.type || '')) {
+    try { return await createImageBitmap(blob); } catch { /* try an <img> */ }
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = () => reject(new Error('this browser cannot open this kind of image'));
+      img.src = url;
+    });
+    if (typeof img.decode === 'function') await img.decode().catch(() => {});
+    return img;
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+}
+
+/**
+ * An image file the user attached, made ready exactly like a screenshot: a JPEG whose longer edge is at most
+ * `maxEdge`, plus a thumbnail for the chat. Resolves to { mime, data (base64), width, height, thumb }.
+ */
+export async function imageFromFile(blob, { maxEdge, quality } = {}) {
+  const o = captureOptions(maxEdge, quality);
+  const src = await decodeImage(blob);
+  try {
+    const [w, h] = sizeOf(src);
+    if (!(w > 0 && h > 0)) throw new Error('the image is empty (0 × 0)');
+    return encode(render(src, { sw: w, sh: h, maxEdge: o.maxEdge }), o);
+  } finally {
+    if (typeof src.close === 'function') src.close();
+  }
+}
+
 /**
  * @param {object} o
  * @param {Function|null} o.hook          the app's `screenshot` option
@@ -106,9 +150,7 @@ let shotSeq = 0;
  * @param {() => void} [o.onState]        the stream started or stopped
  */
 export function createCapture({ hook = null, keep = () => false, drawerRect = () => null, hideDrawer = () => {}, onState = () => {}, maxEdge, quality } = {}) {
-  const o = { ...CAPTURE_DEFAULTS };
-  if (Number(maxEdge) >= 256) o.maxEdge = Math.min(4096, Math.round(Number(maxEdge)));
-  if (Number(quality) > 0 && Number(quality) <= 1) o.quality = Number(quality);
+  const o = captureOptions(maxEdge, quality);
   let stream = null;
   let video = null;
   let busy = null;

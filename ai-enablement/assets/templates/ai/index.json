@@ -1,0 +1,10 @@
+{
+  "$comment": "The application's capability index: what its AI can do (AI Enablement). The runtime loads it with createAiAgent({ capabilities: '<this file's URL>', host }). Paths are relative to this file. Check it with: node <skill>/scripts/validate.mjs <app-root>",
+  "format": "ai-enablement/1",
+  "agents": [],
+  "skills": [],
+  "tools": [],
+  "toolsets": [],
+  "toolsConfig": "ai-tools.json",
+  "memory": "ai-memory.json"
+}

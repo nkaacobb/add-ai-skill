@@ -28,9 +28,10 @@ test('hello-world content: labels match the status bar (no second name for one n
   assert.deepEqual(editorView({ ...state, fontSize: 17.4, wrap: false }).editorSettings, 'font size 17 px, line wrapping off');
 });
 
-test('hello-world tools: every tool is valid, wraps the editor\'s own functions, and matches ai-tools.json', async () => {
-  const { editorTools } = await import('../examples/hello-world/ai-tools.js');
+test('hello-world tools: every tool is valid, calls the editor through host, and matches ai/ai-tools.json', async () => {
+  const { readToolModule } = await import('../assets/ai-agent/core/capabilities.js');
   const { normalizeTool, validateArgs, toolsConfigPatch } = await import('../assets/ai-agent/core/tools.js');
+  const modules = await Promise.all(['document', 'editor', 'file'].map((m) => import(`../examples/hello-world/ai/tools/${m}.js`)));
   const calls = [];
   const app = {
     findText: (q, o) => { calls.push(['findText', q, o]); return [{ line: 3, column: 1, lineText: 'x' }]; },
@@ -42,20 +43,24 @@ test('hello-world tools: every tool is valid, wraps the editor\'s own functions,
     selection: () => ({ text: '', start: 0, end: 0, line: 1, col: 1 }),
     controls: {},
   };
-  const tools = editorTools(app).map((d) => normalizeTool(d));
+  const loaded = modules.map((m) => readToolModule(m));
+  assert.deepEqual(loaded.flatMap((r) => r.problems), []);
+  assert.deepEqual(loaded.flatMap((r) => r.toolsets.map((ts) => ts.name)), ['document', 'editor', 'file'], 'one toolset per module');
+  const tools = loaded.flatMap((r) => r.tools).map((d) => normalizeTool(d));
   const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
   assert.deepEqual(tools.map((t) => [t.name, t.effect]), [
     ['find_text', 'read'], ['get_selection', 'read'], ['insert_text', 'write'], ['replace_text', 'write'],
     ['set_editor_settings', 'write'], ['rename_file', 'write'], ['replace_document', 'destructive'], ['new_document', 'destructive'],
   ]);
-  const run = (name, args) => { const v = validateArgs(byName[name], args); assert.ok(v.ok, v.errors.join()); return byName[name].run(v.args); };
+  const run = (name, args) => { const v = validateArgs(byName[name], args); assert.ok(v.ok, v.errors.join()); return byName[name].run(v.args, { host: app }); };
   assert.deepEqual(run('find_text', { query: 'wher' }), { count: 1, occurrences: [{ line: 3, column: 1, lineText: 'x' }] });
   assert.equal(run('replace_text', { find: 'wher', replace: 'were' }), 'Replaced 2 occurrences of "wher".');
   assert.deepEqual(calls.find((c) => c[0] === 'replaceText'), ['replaceText', 'wher', 'were', { all: true, matchCase: false }]);
-  assert.equal(validateArgs(byName.set_editor_settings, { fontSize: 99 }).args.fontSize, 24, 'clamped to the slider range');
+  assert.equal(validateArgs(byName.set_editor_settings, { fontSize: 99 }).args.fontSize, 24, 'clamped to the slider range (its inputSchema maximum)');
+  assert.equal(byName.find_text.toolset, 'document');
   assert.equal(validateArgs(byName.insert_text, { text: 'x', where: 'middle' }).ok, false);
   const fs = await import('node:fs');
-  const config = JSON.parse(fs.readFileSync(new URL('../examples/hello-world/ai-tools.json', import.meta.url), 'utf8'));
+  const config = JSON.parse(fs.readFileSync(new URL('../examples/hello-world/ai/ai-tools.json', import.meta.url), 'utf8'));
   assert.deepEqual(Object.keys(config.tools).sort(), tools.map((t) => t.name).sort(), 'the config lists exactly the catalog');
   assert.equal(toolsConfigPatch(config).toolStates.new_document, false, 'destructive tools start off');
 });
@@ -71,7 +76,7 @@ test('hello-world: the model\'s editor-settings block is read leniently and clam
 test('hello-world memory file: valid starting notes, short, with stable ids and no duplicates', async () => {
   const fs = await import('node:fs');
   const { parseMemoryFile, buildMemoryPrompt, MEMORY_LIMITS } = await import('../assets/ai-agent/core/memory.js');
-  const json = JSON.parse(fs.readFileSync(new URL('../examples/hello-world/ai-memory.json', import.meta.url), 'utf8'));
+  const json = JSON.parse(fs.readFileSync(new URL('../examples/hello-world/ai/ai-memory.json', import.meta.url), 'utf8'));
   const notes = parseMemoryFile(json);
   assert.equal(notes.length, json.memories.length, 'every entry is a usable note');
   assert.deepEqual(notes.map((m) => m.id), json.memories.map((m) => m.id), 'ids are kept as written');

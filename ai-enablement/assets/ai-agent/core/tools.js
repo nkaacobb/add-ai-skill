@@ -2,16 +2,21 @@
 // Pure module: no DOM. The drawer runs the loop (ui/drawer.js); the adapters translate tools and calls to each
 // provider's wire format.
 //
-// A tool is declared by the integration, wrapping the app's own functions:
+// A tool is declared by the integration (or a tool module in the app's capability folder), wrapping the app's own
+// functions:
 //   { name: 'filter_orders', title: 'Filter orders', description: 'Show only orders with this status.',
 //     parameters: { status: { type: 'enum', values: ['open', 'shipped'], required: true, description: '…' } },
-//     effect: 'read' | 'write' | 'destructive',      // decides whether the user is asked first
+//       — or inputSchema: { type: 'object', properties: { status: { enum: […] } }, required: ['status'] } (JSON Schema)
+//     effect: 'read' | 'write' | 'destructive' | 'external' | 'system',   // decides whether the user is asked first
+//       — or annotations: { readOnlyHint, destructiveHint, openWorldHint } (MCP); the effect wins when both are given
 //     pages: ['orders'], when: () => boolean,         // where it can be used (the rest of the time: "not here")
 //     group: 'Orders', enabled: false,                // default state before the user or the config changes it
-//     run: (args, { agent, signal }) => result }      // the app's own function; its return value goes to the model
+//     run: (args, { host, agent, signal, call }) => result }   // the app's own function; its result goes to the model
 //
 // Parameters use the field format of parseBlockValues (core/blocks.js) plus `required`, `description` and the
-// 'array' type, so arguments are coerced and clamped before run() sees them.
+// 'array' type, so arguments are coerced and clamped before run() sees them. A JSON Schema `inputSchema` is converted
+// to that format (core/schema.js); `toMcpTool()` gives the tool back as an MCP tool descriptor. `host` is the object
+// the integration passes as createAiAgent({ host }), so tool modules call the application without globals.
 //
 // Neutral wire formats shared by the adapters and the relays:
 //   tools      [{ name, description, parameters: <JSON Schema object> }]
@@ -23,9 +28,12 @@
 
 import { coerceValue, parseLooseObject } from './blocks.js';
 import { stableStringify } from './hash.js';
+import { fromJsonSchema, effectFromAnnotations, annotationsFor, EFFECT_NAMES } from './schema.js';
 
 export const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
-export const EFFECTS = Object.freeze(['read', 'write', 'destructive']);
+export const EFFECTS = EFFECT_NAMES;
+/** Effects that change something: the ones that may need the user's confirmation. */
+const CHANGES = { write: 'changes the application', destructive: 'destructive: changes the application; the user always confirms', external: 'reaches outside the application; the user always confirms', system: 'changes the application itself; the user always confirms' };
 export const REQUEST_TOOL = 'request_tool';
 export const RESULT_MAX_CHARS = 4000;
 const FIELD_TYPES = new Set(['number', 'integer', 'boolean', 'enum', 'string', 'array']);
@@ -41,27 +49,47 @@ export function normalizeTool(def, { page = '' } = {}) {
   if (typeof def.run !== 'function') throw new Error(`Tool "${name}" needs a run(args) function.`);
   const description = String(def.description || '').trim();
   if (!description) throw new Error(`Tool "${name}" needs a description: it is what the model reads to decide when to call it.`);
+  if (def.parameters && def.inputSchema) throw new Error(`Tool "${name}": give either parameters or inputSchema, not both.`);
+  const declared = def.inputSchema ? fromJsonSchema(def.inputSchema, `Tool "${name}"`) : def.parameters || {};
   const parameters = {};
-  for (const [key, spec] of Object.entries(def.parameters || {})) {
+  for (const [key, spec] of Object.entries(declared)) {
     if (!TOOL_NAME.test(key)) throw new Error(`Tool "${name}": parameter "${key}" is not a valid name.`);
     const type = spec?.type || 'string';
     if (!FIELD_TYPES.has(type)) throw new Error(`Tool "${name}": parameter "${key}" has an unknown type "${type}".`);
     parameters[key] = { ...spec, type };
   }
-  const effect = EFFECTS.includes(def.effect) ? def.effect : 'write';
+  const annotations = def.annotations && typeof def.annotations === 'object' ? { ...def.annotations } : null;
+  // An unknown effect falls back to 'write' (asks first), as in 1.x; scripts/validate.mjs reports it.
+  const effect = (EFFECTS.includes(def.effect) && def.effect) || effectFromAnnotations(annotations) || 'write';
   const pages = def.pages === undefined || def.pages === null ? [] : (Array.isArray(def.pages) ? def.pages : [def.pages]).map(String);
   return {
     name,
-    title: String(def.title || name.replace(/[_-]+/g, ' ').replace(/^\w/, (c) => c.toUpperCase())),
+    title: String(def.title || annotations?.title || name.replace(/[_-]+/g, ' ').replace(/^\w/, (c) => c.toUpperCase())),
     description,
     parameters,
     effect,
     pages: page && !pages.length ? [page] : pages,
     when: typeof def.when === 'function' ? def.when : null,
     group: String(def.group || ''),
+    toolset: String(def.toolset || ''),
     enabled: def.enabled === true,
     timeoutMs: Number(def.timeoutMs) > 0 ? Number(def.timeoutMs) : 30000,
+    ...(annotations ? { annotations } : {}),
+    ...(def.outputSchema && typeof def.outputSchema === 'object' ? { outputSchema: def.outputSchema } : {}),
+    ...(def.source ? { source: String(def.source) } : {}),
     run: def.run,
+  };
+}
+
+/** A tool as an MCP tool descriptor ({ name, title, description, inputSchema, annotations, outputSchema? }). */
+export function toMcpTool(tool) {
+  return {
+    name: tool.name,
+    title: tool.title,
+    description: tool.description,
+    inputSchema: toJsonSchema(tool.parameters),
+    ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
+    annotations: { title: tool.title, ...annotationsFor(tool.effect, tool.annotations) },
   };
 }
 
@@ -88,12 +116,26 @@ function fieldSchema(spec) {
       out.type = 'array';
       out.items = fieldSchema({ type: 'string', ...(spec.items || {}) });
       if (spec.maxItems > 0) out.maxItems = spec.maxItems;
+      if (spec.minItems > 0) out.minItems = spec.minItems;
       break;
     default:
       out.type = 'string';
       if (spec.maxLength > 0) out.maxLength = spec.maxLength;
+      if (spec.minLength > 0) out.minLength = spec.minLength;
+      if (typeof spec.pattern === 'string') out.pattern = spec.pattern;
   }
   return out;
+}
+
+/** What a string field's minLength / pattern say about a value ('' when it passes). */
+function stringRule(key, spec, value) {
+  if (spec.minLength > 0 && value.length < spec.minLength) return `"${key}" must be at least ${count(spec.minLength)} characters long`;
+  if (typeof spec.pattern === 'string') {
+    let re;
+    try { re = new RegExp(spec.pattern, 'u'); } catch { return ''; }
+    if (!re.test(value)) return `"${key}" does not have the expected form (${spec.pattern})`;
+  }
+  return '';
 }
 
 /** The parameters of a tool as a JSON Schema object (the subset every provider accepts). */
@@ -207,6 +249,26 @@ function overLimit(key, spec, value) {
   return text.length > max ? `"${key}" is ${count(text.length)} characters long, over its limit of ${count(max)}: send less in one call` : '';
 }
 
+/** A list argument: items coerced to the item spec (unreadable ones dropped), at most maxItems, at least minItems. */
+function coerceList(key, spec, raw) {
+  const list = Array.isArray(raw) ? raw : String(raw).split(',').map((x) => x.trim()).filter(Boolean);
+  const items = [];
+  for (const item of list.slice(0, spec.maxItems > 0 ? spec.maxItems : 100)) {
+    const r = coerceValue({ type: 'string', ...(spec.items || {}) }, item);
+    if (r.ok) items.push(r.value);
+  }
+  if (spec.minItems > 0 && items.length < spec.minItems) return { error: `"${key}" needs at least ${spec.minItems} item${spec.minItems === 1 ? '' : 's'}` };
+  return { value: items };
+}
+
+/** One argument coerced and clamped to its field: { value } or { error }. */
+function coerceField(key, spec, raw) {
+  const r = coerceValue(spec, raw);
+  if (!r.ok) return { error: `"${key}" must be ${spec.type === 'enum' ? `one of ${(spec.values || []).join(', ')}` : `a ${spec.type}`}` };
+  const rule = spec.type === 'string' ? stringRule(key, spec, String(r.value)) : '';
+  return rule ? { error: rule } : { value: r.value };
+}
+
 /** Coerce and clamp arguments to a tool's parameters. Unknown keys are dropped; missing required ones are errors. */
 export function validateArgs(tool, raw) {
   const input = parseArguments(raw);
@@ -223,19 +285,9 @@ export function validateArgs(tool, raw) {
     }
     const tooLong = spec.type === 'string' ? overLimit(key, spec, input[k]) : '';
     if (tooLong) { errors.push(tooLong); continue; }
-    if (spec.type === 'array') {
-      const list = Array.isArray(input[k]) ? input[k] : String(input[k]).split(',').map((x) => x.trim()).filter(Boolean);
-      const items = [];
-      for (const item of list.slice(0, spec.maxItems > 0 ? spec.maxItems : 100)) {
-        const r = coerceValue({ type: 'string', ...(spec.items || {}) }, item);
-        if (r.ok) items.push(r.value);
-      }
-      args[key] = items;
-      continue;
-    }
-    const r = coerceValue(spec, input[k]);
-    if (r.ok) args[key] = r.value;
-    else errors.push(`"${key}" must be ${spec.type === 'enum' ? `one of ${(spec.values || []).join(', ')}` : `a ${spec.type}`}`);
+    const r = spec.type === 'array' ? coerceList(key, spec, input[k]) : coerceField(key, spec, input[k]);
+    if (r.error) errors.push(r.error);
+    else args[key] = r.value;
   }
   return { ok: errors.length === 0, args, errors };
 }
@@ -275,7 +327,7 @@ export function classifyTools(tools, settings, pageId) {
 
 /** Neutral tool specs for the adapters. */
 export function toolSpecs(tools) {
-  return tools.map((t) => ({ name: t.name, description: `${t.description}${t.effect === 'read' || t.builtin ? '' : ` (${t.effect === 'destructive' ? 'destructive: ' : ''}changes the application${t.effect === 'destructive' ? '; the user always confirms' : ''})`}`, parameters: toJsonSchema(t.parameters) }));
+  return tools.map((t) => ({ name: t.name, description: `${t.description}${t.effect === 'read' || t.builtin || !CHANGES[t.effect] ? '' : ` (${CHANGES[t.effect]})`}`, parameters: toJsonSchema(t.parameters) }));
 }
 
 /** The built-in tool through which the model asks the user to turn a tool on. */
@@ -469,7 +521,7 @@ export function toolsConfigPatch(json) {
 /** The current tool settings as the JSON config file an app ships (see toolsConfigPatch). */
 export function exportToolsConfig(tools, settings) {
   const out = {
-    $comment: 'ai-agent-drawer tool settings. Load with createAiAgent({ toolsConfig: \'ai-tools.json\' }). Users can still change them in Settings > Tools.',
+    $comment: 'AI Enablement tool settings (the agent drawer). Load with createAiAgent({ toolsConfig: \'ai-tools.json\' }) or name the file as "toolsConfig" in the capability index. Users can still change them in Settings > Tools.',
     toolsEnabled: settings.toolsEnabled,
     confirmWrites: settings.confirmWrites,
     confirmDestructive: settings.confirmDestructive,

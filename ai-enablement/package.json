@@ -1,16 +1,18 @@
 {
-  "name": "add-ai-skill",
-  "version": "1.5.0",
+  "name": "ai-enablement",
+  "version": "2.0.0",
   "private": true,
-  "description": "Screen-aware AI agent drawer for any web app: runtime, relays, example, tests and verification tooling (an agent skill).",
+  "description": "AI Enablement: install, upgrade and extend an application's AI layer — the screen-aware agent drawer runtime, tools and toolsets (MCP-compatible), Agent Skills, agents, permissions, relays, a dev workspace for in-app tool authoring, examples, tests and lifecycle tooling (an agent skill).",
   "type": "module",
   "scripts": {
     "demo": "node assets/relay/relay.mjs --static .",
+    "workspace": "node scripts/workspace.mjs examples/hello-world --static .",
     "test": "node --test",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "validate": "node scripts/validate.mjs"
   },
   "engines": {
     "node": ">=18"
   },
-  "comment": "The runtime and relay.mjs need Node 18+; scripts/verify.mjs and the browser tests need Node 22+ (global WebSocket)."
+  "comment": "The runtime, relay.mjs and the lifecycle scripts need Node 18+; scripts/verify.mjs and the browser tests need Node 22+ (global WebSocket); the Office-file tests need Node 21.2+ (deflate-raw)."
 }

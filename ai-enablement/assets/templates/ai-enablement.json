@@ -1,0 +1,27 @@
+{
+  "$comment": "AI Enablement manifest: what the skill installed in this app and what the app owns. Written at the end of every run of the skill; committed with the app; never secrets. Format: references/upgrading.md, 'The manifest'.",
+  "skill": "ai-enablement",
+  "skillVersion": "{{skillVersion}}",
+  "runtimeVersion": "{{runtimeVersion}}",
+  "updated": "{{date}}",
+  "appId": "{{appId}}",
+  "framework": {
+    "runtime": "{{runtimeDir}}",
+    "relay": null
+  },
+  "capabilities": {
+    "index": "{{indexPath}}",
+    "agents": [],
+    "skills": [],
+    "toolsets": [],
+    "tools": 0
+  },
+  "integration": [],
+  "toolsConfig": "",
+  "memoryFile": "",
+  "features": [],
+  "declined": [],
+  "pages": [],
+  "customizations": [],
+  "notes": ""
+}

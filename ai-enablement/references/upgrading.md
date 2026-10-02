@@ -1,8 +1,14 @@
 # Upgrading an app that already has the agent
 
 Use this when `scripts/detect.mjs` reports **UPGRADE** or **CURRENT**, or the user asks to update the agent or add a
-feature to an app that already has it. **Never build a second agent**: one `createAiAgent()` per app, and the same
-`appId` forever (it namespaces every user's settings, API keys and saved chats in their browser).
+feature to an app that already has it — including apps built with **add-ai-skill 1.x**, the skill's earlier name:
+their runtime, relay, record and options are all recognised, and they upgrade like any other. **Never build a second
+agent**: one `createAiAgent()` per app, and the same `appId` forever (it namespaces every user's settings, API keys
+and saved chats in their browser).
+
+The rule throughout: **framework-owned** files (the runtime folder, the relay file) are replaced when they are
+unchanged copies and reconciled when they were edited; **app-owned** files (the integration, content builders, the
+capability folder, relay config, CSS) are only ever added to or edited in place.
 
 The user's words set the scope: "just update the runtime", "only add tools", "add memory and screenshots", "upgrade
 everything". Without a scope, propose the full upgrade (U3) and proceed unless they object.
@@ -18,24 +24,34 @@ node <skill>/scripts/detect.mjs <app-root>          # --json for machine-readabl
 ```
 
 It reports the runtime copy (version, and whether it is unchanged since that release), the relays (version, 1.0-style
-edits), relay config files (names only), the `createAiAgent()` call(s) with their `appId` and options, the
-integration record (`ai-agent.integration.json`), tool config and memory files, and app code that looks like a
-workaround a newer runtime covers. Its **Features** lines are the to-do list of the upgrade:
+edits), relay config files (names only), the `createAiAgent()` call(s) with their `appId` and options, the manifest
+(`ai-enablement.json`) or the 1.x record (`ai-agent.integration.json`), capability folders and the paths they name
+that are missing, development-time folders (`.claude/` and the like — never the app's), tool config and memory files,
+and app code that looks like a workaround a newer runtime covers. Its **Features** lines are the to-do list of the
+upgrade:
 
 ```
 Features  (in the installed runtime? · used by the integration?)
-  tools   in the runtime · used: tools, toolsConfig, src/ai/ai-tools.json
-  memory  NOT in the runtime (arrives with 1.3.0) · to add: comes with the runtime; seed ai-memory.json
-  vision  NOT in the runtime (arrives with 1.3.0) · to add: comes with the runtime; decide on a `screenshot` hook
+  tools       in the runtime · used: tools, toolsConfig, src/ai/ai-tools.json
+  memory      NOT in the runtime (arrives with 1.3.0) · to add: comes with the runtime; seed ai-memory.json
+  vision      NOT in the runtime (arrives with 1.3.0) · to add: comes with the runtime; decide on a `screenshot` hook
+  attachments NOT in the runtime (arrives with 1.5.0) · to add: comes with the runtime (the + button); a `readFile` hook only for the app's own file formats
+  capabilities NOT in the runtime (arrives with 1.6.0) · not adopted — offer the capability folder (references/upgrading.md, "Adopting the framework")
+  agents       NOT in the runtime (arrives with 1.6.0) · none — the app has its one implicit agent; offer agents where users do distinct kinds of work
+  skills       NOT in the runtime (arrives with 1.6.0) · none — offer skills for multi-step work the app's users repeat
+  workspace    NOT in the runtime (arrives with 1.6.0) · off — development only (references/in-app-authoring.md)
 ```
 
 Here the tools are done (leave them), and the upgrade is: the runtime, then the memory file and the screenshot
-decision. "Check for memory and vision" lists canvases/WebGL views and policy headers that matter for screenshots. Without Node, search for `ai-agent.js` containing `export const VERSION`, for `createAiAgent(`, and
-for `ai-agent.integration.json`.
+decision; attachments come with the runtime. "Check for memory and vision" lists canvases/WebGL views and policy headers that matter for screenshots. Without Node, search for `ai-agent.js` containing `export const VERSION`, for `createAiAgent(`, and
+for `ai-enablement.json` (or the 1.x `ai-agent.integration.json`) and an `index.json` with `"format": "ai-enablement/1"`.
 
 Then read, before changing anything:
 
-- **The integration record**, if there is one: features in use, the context and tool plans, what the user declined.
+- **The manifest** (`ai-enablement.json`) or the 1.x record (`ai-agent.integration.json`), if there is one: features
+  in use, the context and tool plans, what the user declined.
+- **The capability folder**, if there is one: `node <skill>/scripts/validate.mjs <app-root>` before the upgrade, so
+  what was already broken is not blamed on it.
 - **The integration module** (the file that calls `createAiAgent`), the content builders and hooks, custom CSS for the
   drawer, and the relay config — enough to restate the current context plan in a few lines.
 - **Edited copies.** Detect says whether the runtime or relay files differ from their release. An edited copy must not
@@ -74,7 +90,33 @@ version's **Upgrading** notes. They say what to migrate and which app-side worka
   | sign-in/CSRF code at "enforce it here" | `'authorize' => static function (): bool\|string { … }` |
 
   An embedded Node relay: update its imports to the new `relay.mjs` exports (`createRelay`, `loadConfig`).
-- **Caches**: bump the version in the asset URLs (`?v=1.4.0`) or rely on `no-cache`, so browsers load the new files.
+- **Capability folder** (if the app has one): never replaced. Validate it after the runtime is in.
+- **Framework behaviour from runtime 1.6** (check the app against it; every 1.5 option keeps working):
+  - Effects `external` and `system` exist; `toolSpecs` describe them. An unknown effect still means `write` (asks
+    first), as before; `validate.mjs` now reports it.
+  - Tools receive `host` in their context (`run(args, { host, agent, signal, call })`) — `undefined` unless the app
+    passes `host`, so existing tools are unaffected.
+  - New system prompt sections: `== AGENT: … ==` (only with agent files) and `== SKILLS ==` (only with skills).
+    Without either, the prompt is as in 1.5.
+  - Settings > Tools shows permission badges; Settings > Agent lists agents and skills when there are any.
+  - The drawer title becomes an agent picker when there are two or more agents (`.aia-agent-pick`).
+  - Saved chats keep `agent` and `skills` (older chats load as before).
+  - `exportToolsConfig()` / "Download ai-tools.json" writes a new `$comment` text (the format is unchanged).
+- **Caches**: bump the version in the asset URLs (`?v=1.6.0`) or rely on `no-cache`, so browsers load the new files.
+  A bundled app also gets new runtime files (`core/files.js`, `bytes.js`, `pdf.js`, `office.js`); the PDF and office
+  readers are loaded with `import()`, which every bundler splits into its own chunk.
+- **Attachment behaviour from runtime 1.5** (check the app against it):
+  - The composer has a **+** button left of the message field (`.aia-plus`), and the drawer takes drops and pasted
+    files: a drop on the drawer no longer reaches the host page's own `drop` listeners. App CSS that styles
+    `.aia-composer > *` or assumes the textarea is the composer's first control needs a look.
+  - `agent.ask(text)` (and the welcome suggestions) now take what waits in the composer along, as Send does.
+  - The system prompt's paragraph on images starts "Images:" (it was "Screenshots:") and also covers image files;
+    an *Attached files* paragraph is added while a conversation carries files. App tests that match the old wording
+    need updating.
+  - `screenshots: false` keeps Settings > Vision while attachments are on ("This model can see images" also governs
+    attached images); `attachments: false` as well removes it.
+  - New setting `maxFileChars` (Settings > Agent > *Max file content*, 40,000 by default): set a lower default for a
+    local model with a small context.
 - **Web server limits** when the app uses a relay and screenshots: request bodies grow (see `providers.md`).
 - **Tool-call behaviour from runtime 1.4** (check the app's tools against it):
   - Text over a string parameter's `maxLength` — **500 when unset** — is an error the model is told about, no longer
@@ -104,6 +146,7 @@ Remove each only after checking the new behaviour covers what the app needed:
 | Code actions that are really app operations ("Apply filter") | 1.2 | A tool (the model calls it; the user confirms), optionally keeping the button. |
 | "Things to remember" pasted into the system prompt or the app context; an app-side notes list for the agent | 1.3 | `ai-memory.json` + `memoryFile` (users edit them in Settings > Memory). Keep in the app context what describes the app for everyone. |
 | An app-side "send a screenshot" button, or `canvas.toDataURL()` pasted into questions | 1.3 | The camera button; the app's capture code becomes the `screenshot` hook. |
+| An app-side "send a file to the agent" button, `FileReader` code that pastes file text into `agent.ask()`, a drop handler on the drawer | 1.5 | The + button (and drag and drop, paste). A reader for a format the runtime does not read (or pdf.js the app already ships) becomes the `readFile` hook. |
 
 Keep the layout CSS under `html.aia-drawer-open` — that is still the recipe.
 
@@ -113,9 +156,15 @@ Offer only what fits the app; record what the user declines (U7) so the next upg
 
 | Feature | Since | Fits when | What it takes |
 | --- | --- | --- | --- |
-| **Tools** — the agent acts in the app | 1.2 | Users do things on the screens (almost every app) | The tool plan (SKILL.md steps 1–2), `ai-tools.js` over the app's own functions, `ai-tools.json` with the user's choice of what is on, tests (`tools.md`). |
+| **Tools** — the agent acts in the app | 1.2 | Users do things on the screens (almost every app) | The tool plan (SKILL.md steps 1–2), tool modules over the app's own functions, `ai-tools.json` with the user's choice of what is on, tests (`tools.md`, `capabilities.md`). |
+| **Capability folder** — tools, toolsets, permissions in `ai/` | 1.6 | Before adding skills, agents or in-app authoring; or to organise many tools | "Adopting the framework" below. |
+| **Skills** — written procedures the agent loads | 1.6 | Users repeat multi-step work (proofread, reconcile, design) | `scaffold.mjs … skill`; steps naming the tools (`capabilities.md`). |
+| **Agents** — roles the user picks | 1.6 | Distinct kinds of work needing their own instructions, tools or permissions | `scaffold.mjs … agent`; compose existing tools, toolsets, skills. |
+| **Permissions** — allow / ask / deny | 1.6 | Something must always confirm, or never run, whatever users switch | `permissions` in the index or an agent (`framework.md`). |
+| **In-app authoring** — the app's AI adds tools | 1.6 | Developers want to grow the tool set from inside the app | `host`, `workspace: true` in development, `scripts/workspace.mjs` (`in-app-authoring.md`). |
 | **Memory** — notes kept between conversations | 1.3 | Always (it is on once the runtime is replaced) | Seed notes the screen does not show — ask the user — in `ai-memory.json`, loaded with `memoryFile`; `memorySave` if the app's backend should keep users' notes (`memory-and-vision.md`). |
 | **Vision** — screenshots for models that see images | 1.3 | Always (on once the runtime is replaced); most useful where the screen is visual: canvases, WebGL, charts, layouts | Decide how the picture is taken: the browser's screen capture (nothing to write) or a `screenshot` hook for a canvas view; `defaults.vision` for the app's default model; host requirements; relay 1.3 (`memory-and-vision.md`). |
+| **Attachments** — the + button: images and files with a question | 1.5 | Always (on once the runtime is replaced) | Nothing, usually. `defaults.maxFileChars` for a small-context model; `readFile` for the app's own file formats; `attachments: false` where users' documents must not reach the model provider (`memory-and-vision.md`, "Attachments"). |
 | Dialog docking | 1.1 | The app uses `dialog.showModal()` | `dialogs: 'dock'`. |
 | Relay auto-detection | 1.1 | The app runs with and without its relay | `relayProbe`. |
 | Relay public mode | 1.1 | Deployed for visitors, server-held key | `relay.config.php` with `'mode' => 'public'`, a preset and limits. |
@@ -124,8 +173,10 @@ Offer only what fits the app; record what the user declines (U7) so the next upg
 
 Automatic with the new runtime (mention, nothing to do): key isolation, the max-wait debounce, theming fixes, the
 context-size estimate, resume replay, relay error messages — and, from 1.3, the Memory and Vision tabs, the camera
-button, and the built-in `remember` / `forget` / `take_screenshot` tools. Tell the user they are there even if nothing
-app-specific is added, and how to switch them off (`memory: false`, `screenshots: false`, or in Settings).
+button, and the built-in `remember` / `forget` / `take_screenshot` tools; from 1.5, the + button (attach images and
+files), drag and drop and paste onto the drawer; from 1.6, permission badges in Settings > Tools, MCP export
+(`agent.tools.mcp()`), and `inputSchema` / `annotations` on tools. Tell the user they are there even if nothing app-specific is added,
+and how to switch them off (`memory: false`, `screenshots: false`, `attachments: false`, or in Settings).
 
 **Adding memory and vision to an app at 1.2 or older** (what "only the pieces it does not have" comes to):
 
@@ -139,32 +190,66 @@ app-specific is added, and how to switch them off (`memory: false`, `screenshots
    screenshot) and raise the web server's body limit.
 5. Verify (`verify.mjs` reports `memory` and `vision`), and record the features (U7).
 
+## Adopting the framework (an app with the agent but no capability folder)
+
+Runtime 1.6 loads tools, toolsets, skills and agents from a capability folder. An app that passes its tools inline
+(`tools: appTools`) keeps working unchanged: adoption is **offered, never forced** — propose it when the user wants
+skills or agents, asks for a new tool, or wants the app's AI to add tools itself (`in-app-authoring.md`).
+
+1. `node <skill>/scripts/scaffold.mjs <served-dir>/ai init` — next to the app's static files (`framework.md`,
+   "Bundled apps" for apps built from `src/`).
+2. **Move, do not rewrite, the tools.** Give the integration a `host` (the object the tools close over: the store, a
+   service layer, the app instance). Move each tools module into `ai/tools/` as a toolset module whose tools take
+   `host` from `run(args, { host })` instead of a closure — the bodies stay the same. A factory like
+   `export function appTools(app) { return [...] }` becomes `export default (host) => [...]` with no other change.
+3. Move `ai-tools.json` and `ai-memory.json` into `ai/` (keep their content) and name them in the index
+   (`"toolsConfig"`, `"memory"`); add the modules to `"tools"`.
+4. In the integration: `capabilities: '<URL of ai/index.json>', host: …` in place of `tools`, `toolsConfig`,
+   `memoryFile`. Same `appId`.
+5. `validate.mjs`, the app's tool tests (with `host` mocked), `verify.mjs`: the *tools* line lists the same tools,
+   the *capabilities* line the index.
+
+Hello World went through exactly this (`examples/hello-world/`: `ai-tools.js` → `ai/tools/{document,editor,file}.js`).
+
 ## U7. Verify, record, report
 
-1. Run the app's own tests, then `node <skill>/scripts/verify.mjs <url> [--change …]`, and check by hand what was
-   added (SKILL.md step 12). Confirm the saved chats and settings of the old version are still there (same `appId`).
-2. Write or update **`ai-agent.integration.json`** (below).
+1. Run the app's own tests, `node <skill>/scripts/validate.mjs <app-root>` (if there is a capability folder), then
+   `node <skill>/scripts/verify.mjs <url> [--change …]`, and check by hand what was added (SKILL.md step 14). Confirm
+   the saved chats and settings of the old version are still there (same `appId`).
+2. Write or update **`ai-enablement.json`** (below). An app with the 1.x record `ai-agent.integration.json`: write the
+   manifest from it (keep every field the record had) and delete the record — `git` shows it as a rename.
 3. Report: versions before → after, what was replaced, migrated and removed, the features added and declined, and
    anything you could not verify.
 
-## The integration record: `ai-agent.integration.json`
+## The manifest: `ai-enablement.json`
 
-Written at the end of every integration (SKILL.md step 13) and every upgrade, at the app's repository root (or next to
-the integration module), and committed with the app. It lets the next upgrade know exactly what is there.
+Written at the end of every install, upgrade and capability change, at the app's repository root, and committed with
+the app. It tells the next run exactly what is there and who owns it. Never secrets: it is committed (validate
+refuses one that looks like it holds a key).
 
 ```json
 {
-  "skill": "add-ai-skill",
-  "skillVersion": "1.5.0",
-  "runtimeVersion": "1.4.0",
-  "updated": "2026-09-30",
+  "skill": "ai-enablement",
+  "skillVersion": "2.0.0",
+  "runtimeVersion": "1.6.0",
+  "updated": "2026-10-02",
   "appId": "inventory",
-  "runtime": "public/ai-agent",
-  "relay": { "file": "public/api/relay.php", "version": "1.4.0", "mode": "public", "config": "AIA_RELAY_DIR (outside the web root)" },
-  "integration": ["public/js/ai-agent-setup.js", "public/js/ai-content.js", "public/js/ai-tools.js"],
-  "toolsConfig": "public/js/ai-tools.json",
-  "memoryFile": "public/js/ai-memory.json",
-  "features": ["tools", "memory", "vision:hook", "dialogs:dock", "relayProbe", "codeActions"],
+  "framework": {
+    "runtime": "public/ai-agent",
+    "relay": { "file": "public/api/relay.php", "version": "1.4.0", "mode": "public", "config": "AIA_RELAY_DIR (outside the web root)" }
+  },
+  "capabilities": {
+    "index": "public/ai/index.json",
+    "agents": ["stock-clerk", "buyer"],
+    "skills": ["reorder-check"],
+    "toolsets": ["orders", "items"],
+    "tools": 9,
+    "permissions": "ask: toolset:orders · buyer denies cancel_order"
+  },
+  "integration": ["public/js/ai-agent-setup.js", "public/js/ai-content.js"],
+  "toolsConfig": "public/ai/ai-tools.json",
+  "memoryFile": "public/ai/ai-memory.json",
+  "features": ["tools", "memory", "vision:hook", "attachments", "capabilities", "agents", "skills", "dialogs:dock", "relayProbe", "codeActions"],
   "memory": { "seeded": 4, "userNotes": "browser (no memorySave)" },
   "vision": { "capture": "screenshot hook: the WebGL view (js/view.js)", "defaultModelSees": true, "agentMayLook": false },
   "declined": ["relay public mode"],
@@ -176,8 +261,11 @@ the integration module), and committed with the app. It lets the next upgrade kn
 }
 ```
 
-`features` uses these names so the next upgrade can tell what is there: `tools`, `memory`, `vision:screen` (the
-browser's screen capture) or `vision:hook`, `dialogs:dock`, `relayProbe`, `codeActions`, `replyActions`; a feature the
-user switched off goes into `declined` (`"memory (memory: false)"`), so the next upgrade does not offer it again.
-
-Never put keys, tokens or other secrets in it: it is committed.
+- `framework` names the framework-owned files: with the skill's release fingerprints they tell an unchanged copy
+  (replace it) from an edited one (reconcile it). Everything else listed is app-owned.
+- `features` uses these names so the next run can tell what is there: `tools`, `memory`, `vision:screen` (the
+  browser's screen capture) or `vision:hook`, `attachments` (or `attachments:readFile`), `capabilities`, `agents`,
+  `skills`, `workspace`, `dialogs:dock`, `relayProbe`, `codeActions`, `replyActions`. A feature the user switched off
+  goes into `declined` (`"memory (memory: false)"`), so the next run does not offer it again.
+- The 1.x record had the same fields with `"skill": "add-ai-skill"`, `"runtime"` and `"relay"` at the top level
+  instead of under `framework`, and no `capabilities`; detect and validate read both.

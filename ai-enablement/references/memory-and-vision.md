@@ -1,8 +1,9 @@
-# Memory and vision
+# Memory, vision and attachments
 
-Both come with the runtime (1.3): an app that copies the runtime has them, with their tabs in Settings. The
-integration adds the app-specific part — what the agent should know from the start, and how a picture of **this** app
-is best taken. `memory: false` / `screenshots: false` remove either one.
+All three come with the runtime (memory and vision since 1.3, attachments since 1.5): an app that copies the runtime
+has them, with their tabs and controls. The integration adds the app-specific part — what the agent should know from
+the start, how a picture of **this** app is best taken, and (rarely) a reader for the app's own file formats.
+`memory: false` / `screenshots: false` / `attachments: false` remove each one.
 
 ## Memory
 
@@ -43,6 +44,8 @@ application the agent could not see ("the easter egg opens with Ctrl+Shift+E").
    ```js
    createAiAgent({ …, memoryFile: 'ai-memory.json' });   // a URL, an object, or a (possibly async) function
    ```
+   With a capability folder, put it there and name it in the index instead (`"memory": "ai-memory.json"`).
+   An agent can be limited to reading the notes (`memory: read`) or see none (`memory: off`) — `framework.md`.
    `created` / `updated` (ISO dates) are optional; a plain array of strings works too. Keep ids stable once shipped
    (users' edits and deletions refer to them). The file is public like any asset: never put private data in it.
 3. **Decide where users' own memories live.** By default: in the browser (`<appId>.ai.memory` in localStorage), so
@@ -187,14 +190,93 @@ Not checked live: Firefox and Safari (they show their own picker; the user may c
 the drawer is not cropped off), and images through Anthropic and Gemini (request formats follow their documentation
 and are unit-tested; OpenAI-compatible servers were checked with a vision model on LM Studio).
 
+## Attachments (the + button)
+
+The **+** button on the left of the message field opens a small menu:
+
+- **Attach an image** — PNG, JPEG, GIF, WebP, BMP, SVG, AVIF… The image goes to the model **exactly like a screenshot**:
+  the same pipeline (`ui/capture.js`) scales it to a JPEG of at most `screenshotMaxEdge` px, it waits in the composer
+  as a thumbnail (click to enlarge, × to remove), shows on the question, counts toward the 3 images a question can
+  carry, and follows the same rules afterwards (only the two newest questions with images send them; saved chats keep
+  the thumbnail only). The model is told which image is a screenshot and which is a file, by name. Offered only while
+  "This model can see images" is on (the menu says why it is not).
+- **Upload a file** — any file. Documents are **read in the browser** and their text goes with the question inside an
+  `<attached_file name="…" type="…" chars="…">` block (a closing tag inside the file is neutralised, like the page
+  snapshot's). The composer shows a chip with the name, the type and the estimated tokens; on the sent question the
+  chip opens **the exact text the agent received**. An image picked here goes the image way.
+
+Drag and drop onto the drawer and pasting (a screenshot tool, "Copy image", a copied file) attach the same way. A paste
+that also carries text — copying cells from Excel or a paragraph from Word puts a picture of them on the clipboard too
+— pastes the text, as before. The host page's own drop handlers never see a drop on the drawer.
+
+| Read as text | How |
+| --- | --- |
+| PDF | Built-in reader (`core/pdf.js`): the page tree, fonts with their ToUnicode maps or encodings, Flate/ASCII streams, object streams, form XObjects; lines and spaces from where text is placed. Pages are marked `--- Page N ---`. Scanned PDFs (no text layer) and encrypted ones are refused with a sentence saying so. |
+| Word `.docx`, Excel `.xlsx`, PowerPoint `.pptx` | The ZIP's XML (`core/office.js`): Word headings (`#`), list items (`-`), tables as `\| a \| b \|` rows, footnotes, text boxes once; Excel one CSV section per sheet (shared/inline strings, dates from their number format, hidden sheets marked); PowerPoint one section per slide in presentation order, with speaker notes. |
+| OpenDocument `.odt` `.ods` `.odp`, RTF | Text with headings and lists; sheets and slides as sections; RTF in its code pages (Japanese, Chinese, Cyrillic… documents read correctly). |
+| Text, code, CSV, JSON, Markdown, logs, config… | Decoded as UTF-8 (with or without BOM), UTF-16 with a BOM, else Windows-1252. Unknown extensions are read when the content is text. |
+| Refused, with what to do instead | Old binary Office files (`.doc`, `.xls`, `.ppt`: "save it as .docx or PDF"), Apple iWork, archives ("unpack it"), audio/video, other binaries; images for a text-only model (an SVG is then read as text); files over 25 MB; empty files. |
+
+Limits: 5 files and 3 images per question; each file's text is cut to **Max file content** (Settings > Agent,
+`maxFileChars`, 40,000 characters ≈ 10k tokens by default) and the model is told (`truncated="true"`). A file stays
+in the conversation while its question is in the history window; attaching the same content again sends it once (the
+older copy becomes a one-line stub). The system prompt gains a short *Attached files* paragraph only while the
+conversation carries files. Saved chats keep a file's text (it cannot be read again); when browser storage runs out,
+the text of files in older chats goes first, and the chip then says the text was not kept.
+
+The PDF and Office readers are loaded with `import()` the first time such a file is attached, so the runtime's start-up
+cost does not grow. Everything is read in the browser: nothing is uploaded anywhere but to the model, with the question.
+
+### What to do in an integration
+
+Usually nothing — the + button works as soon as the runtime is in. Decide only:
+
+1. **Should users attach files here at all?** Leave it on (default) for most apps. `attachments: false` where the model
+   provider must not receive users' documents, or the app's own upload flow is the only allowed path.
+2. **The model's context.** A local model loaded with 4k–8k tokens of context overflows on a long document: set
+   `defaults: { maxFileChars: 12000 }` (users can change it in Settings > Agent) and tell the user to load the model
+   with more context.
+3. **The app's own file formats** (a CAD drawing, a proprietary export) or a better reader the app already ships
+   (pdf.js, mammoth, SheetJS): pass `readFile`. It is tried first; return the text, or `{ text, label }`, or `null`
+   to let the runtime read the file:
+
+   ```js
+   createAiAgent({
+     …,
+     readFile: async (file, { kind }) => {
+       if (/\.gpx$/i.test(file.name)) return { text: summarizeTrack(await file.text()), label: 'GPS track' };
+       return null;                                     // everything else: the built-in readers
+     },
+   });
+   ```
+4. **Host requirements**: nothing new for files. Attached SVG images are decoded from a `blob:` URL: a CSP with an
+   `img-src` list needs `blob:` (and `data:` for the thumbnails, as for screenshots).
+5. **Relay**: no change and no new version needed. File text travels in the question's text (it counts toward the
+   relay's `maxBodyBytes`: public mode 512 KB); attached images are images like screenshots (relay 1.3+, `maxImages`).
+6. **Workarounds to remove when upgrading**: an app-side "send a file to the agent" button, `FileReader` code that
+   pastes file text into `agent.ask()`, a drop handler on the drawer — the + button covers them (`scripts/detect.mjs`
+   flags such code); keep only a reader for formats the runtime does not read, as `readFile`.
+
+### API
+
+`agent.attach(files)` — attach a `File`, `Blob`, `FileList` or array to the next question, as the + button does;
+resolves to one `{ kind, name, size, width?, height?, chars?, totalChars?, truncated?, label? }` per file, or `null` for
+a file that could not be attached (the chat says why). `agent.ask(text)` takes what waits in the composer along, like
+Send. Event `attach` (the same object, once a file is read). Options `attachments`, `readFile`; setting `maxFileChars`.
+
 ## Verifying
 
-`scripts/verify.mjs` reports `memory` (how many notes the agent starts with) and `vision` (it takes one screenshot the
-way the camera button does and says where the picture came from). By hand, with a model:
+`scripts/verify.mjs` reports `memory` (how many notes the agent starts with), `vision` (it takes one screenshot the
+way the camera button does and says where the picture came from) and `attachments` (the + menu opens with its two
+items, and a small text file attaches as text). By hand, with a model:
 
 1. "Remember that I prefer …" → a *Remember* chip with Undo; Settings > Memory lists it. New chat: ask what it
    remembers.
 2. Ask about something only the seed notes say (a shortcut).
 3. Press the camera button → thumbnail in the composer → ask what it sees. Then ask it to "look at the screen": the
    *Allow once* card, the thumbnail on the chip, an answer about the picture.
-4. Settings > Vision: switch "This model can see images" off → the camera button is gone.
+4. Settings > Vision: switch "This model can see images" off → the camera button is gone, and the + menu's
+   *Attach an image* is greyed out with the reason.
+5. Press + → *Upload a file* → pick a PDF or Word file: a chip with its type and token estimate; ask "summarize the
+   attached file"; click the chip on your question to see what the agent received. *Attach an image* (or drop a picture
+   on the drawer): a thumbnail, and the answer describes it.

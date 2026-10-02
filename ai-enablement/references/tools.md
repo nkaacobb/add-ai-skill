@@ -8,8 +8,14 @@ the app's function, sending the result (and the updated screen) back, and showin
 Tools run **in the browser**, with the user's own session and permissions: they can do what the app's front end can
 already do, nothing more. Relays only pass definitions and calls through.
 
-The runtime also has three built-in tools that are not part of the app's catalog — `remember`, `forget` and
-`take_screenshot`. They follow their own settings (Settings > Memory and > Vision): see `memory-and-vision.md`.
+The runtime also has built-in tools that are not part of the app's catalog — `remember`, `forget` and
+`take_screenshot` (they follow their own settings: Settings > Memory and > Vision, `memory-and-vision.md`),
+`use_skill` and `read_skill_file` (while the agent has skills, `framework.md`), and the development workspace tools
+(`in-app-authoring.md`).
+
+The contract, the module and toolset formats, effects and permissions are specified in `framework.md`; recipes for
+adding a tool to an app that has the framework in `capabilities.md`. This file is the how-to: discovering the app's
+actions, writing good tools, and what users see.
 
 ## 1. Discover what the application can do (the tool plan)
 
@@ -30,7 +36,8 @@ For each action, note:
 
 - **What it does** in the user's words (this becomes the description the model reads).
 - **Effect**: `read` (looks something up, changes nothing), `write` (changes app state; undoable or easily fixed),
-  `destructive` (deletes, overwrites, sends, pays, cannot be undone). When unsure, choose the stronger effect.
+  `destructive` (deletes or overwrites; cannot be undone), `external` (sends, publishes, pays, calls a third party),
+  `system` (changes the app itself: code, configuration). When unsure, choose the stronger effect.
 - **Parameters** with types and the real ranges/options (from the controls or validation), which are required.
 - **Where it applies**: which page(s), and preconditions (a row selected, a record open) → `pages` / `when`.
 - **What it returns**: a short, useful result for the model (counts, ids, the new value, an error message).
@@ -40,76 +47,92 @@ deliberately left out (payments, account/security settings, admin actions, anyth
 people, bulk deletes without undo). Ask which tools should start **on**; everything else starts **off** (they stay in
 Settings > Tools, and the model can ask to turn one on).
 
-## 2. Write the tools module
+## 2. Write the tool modules
 
-One module, e.g. `ai-tools.js`, exporting the catalog built on the app's own functions. Never reimplement business
+One module per toolset in the capability folder (`ai/tools/orders.js`), built on the app's own functions and reaching
+them through `host` — the object the integration passes as `createAiAgent({ host })`. Never reimplement business
 logic in a tool; when the logic only exists in a UI handler, drive the real control (`setControlValue(el, v)`, or
 `el.click()`), so the app's validation runs exactly as for a user.
 
 ```js
-// ai-tools.js
-import { setControlValue } from './ai-agent/ai-agent.js';
-import { ordersApi } from './api/orders.js';
-import { store } from './store.js';
+// ai/tools/orders.js — the "orders" toolset
+import { setControlValue } from '../../ai-agent/ai-agent.js';   // the runtime, relative to this file
 
-export const appTools = [
-  {
-    name: 'filter_orders',                       // letters, digits, _ or -; unique
-    title: 'Filter orders',                      // shown in the chat and in Settings > Tools
-    group: 'Orders',                             // groups the Settings > Tools list
-    effect: 'write',                             // read | write | destructive
-    pages: ['orders'],                           // where it can be used ('orders/*' = any sub-page)
-    description: 'Show only orders with this status in the Orders list.',
-    parameters: {
-      status: { type: 'enum', values: ['open', 'shipped', 'cancelled'], required: true },
-      limit: { type: 'integer', min: 10, max: 100, step: 10, description: 'Rows per page.' },
+export default {
+  name: 'orders',
+  title: 'Orders',                               // groups Settings > Tools; agents use toolsets: [orders]
+  description: 'Filter, page through and cancel orders.',
+  tools: [
+    {
+      name: 'filter_orders',                     // letters, digits, _ or -; unique
+      title: 'Filter orders',                    // shown in the chat and in Settings > Tools
+      effect: 'write',                           // read | write | destructive | external | system
+      pages: ['orders'],                         // where it can be used ('orders/*' = any sub-page)
+      description: 'Show only orders with this status in the Orders list.',
+      parameters: {
+        status: { type: 'enum', values: ['open', 'shipped', 'cancelled'], required: true },
+        limit: { type: 'integer', min: 10, max: 100, step: 10, description: 'Rows per page.' },
+      },
+      run: ({ status, limit }, { host }) => {
+        host.dispatch(host.actions.setOrderFilter({ status, pageSize: limit }));   // the app's own action
+        return { shown: host.getState().orders.visible.length };                   // a small, useful result
+      },
     },
-    run: ({ status, limit }) => {
-      store.dispatch(setOrderFilter({ status, pageSize: limit }));     // the app's own action
-      return { shown: store.getState().orders.visible.length };        // a small, useful result
+    {
+      name: 'cancel_order', title: 'Cancel an order', effect: 'destructive', pages: ['orders', 'orders/*'],
+      description: 'Cancel one order by its number. The customer is notified.',
+      inputSchema: { type: 'object', properties: { number: { type: 'string', maxLength: 20, pattern: '^[A-Z0-9-]+$' } }, required: ['number'] },
+      run: async ({ number }, { host }) => {
+        const r = await host.ordersApi.cancel(number);   // the same call the Cancel button makes
+        return r.ok ? `Order ${number} cancelled.` : `Not cancelled: ${r.error}`;
+      },
     },
-  },
-  {
-    name: 'cancel_order', title: 'Cancel an order', group: 'Orders', effect: 'destructive', pages: ['orders', 'orders/*'],
-    description: 'Cancel one order by its number. The customer is notified.',
-    parameters: { number: { type: 'string', required: true, maxLength: 20 } },
-    when: () => store.getState().user.canCancel,  // offered only when the app allows it
-    run: async ({ number }) => {
-      const r = await ordersApi.cancel(number);   // the same call the Cancel button makes
-      return r.ok ? `Order ${number} cancelled.` : `Not cancelled: ${r.error}`;
+    {
+      name: 'set_page_size', title: 'Rows per page', effect: 'write', pages: ['orders'],
+      description: 'Change how many orders are listed per page.',
+      parameters: { rows: { type: 'enum', values: [25, 50, 100], required: true } },
+      run: ({ rows }) => { setControlValue('#page-size', rows); return `Showing ${rows} rows per page.`; },   // via the real control
     },
-  },
-  {
-    name: 'set_page_size', title: 'Rows per page', effect: 'write', pages: ['orders'],
-    description: 'Change how many orders are listed per page.',
-    parameters: { rows: { type: 'enum', values: [25, 50, 100], required: true } },
-    run: ({ rows }) => { setControlValue('#page-size', rows); return `Showing ${rows} rows per page.`; },   // via the real control
-  },
-];
+  ],
+};
 ```
 
-Parameter types: `string` (`maxLength`), `number` / `integer` (`min`, `max`, `step`), `boolean`, `enum` (`values`),
-`array` (`items`, `maxItems`); each may have `required`, `description`, `default`, `aliases`. Arguments are coerced and
-clamped before `run()` is called; unknown ones are dropped; a missing required one goes back to the model as an error.
-Text over a string's `maxLength` (default **500**) is an error too, with both sizes ("`notes` is 12,981 characters
-long, over its limit of 12,000: send less in one call"); it is never cut, so a JSON payload cannot reach `run()`
-half-written. Give large-text parameters an explicit `maxLength`. Arguments the runtime cannot read (broken or
-cut-off JSON) are reported to the model and the call is not run; values are never guessed.
+- `when: () => …` makes a tool usable only when the app allows it (a row selected, the user's role): with `host` in
+  scope, write the module as a factory — `export default (host) => ({ name: 'orders', tools: [ { …, when: () =>
+  host.getState().user.canCancel } ] })`.
+- A module may also export a single tool or a plain list. Apps that keep tools in their own code (bundled from
+  `src/`) import the modules and pass them inline: `createAiAgent({ tools: [ordersTools, itemsTools], host })`.
+- 1.x integrations pass `tools: appTools` with closures over app modules; that keeps working
+  (`upgrading.md`, "Adopting the framework", moves them into the capability folder).
 
-`run(args, { agent, signal, call })` may be async (30 s timeout by default, `timeoutMs` to change). Its return value
-goes to the model: a string as written, anything else as compact JSON, capped at 4,000 characters. Throw (or return
-a message) on failure — the model sees the error and can explain or retry. Keep results short and factual.
+Parameter types: `string` (`maxLength`, `minLength`, `pattern`), `number` / `integer` (`min`, `max`, `step`),
+`boolean`, `enum` (`values`), `array` (`items`, `maxItems`, `minItems`); each may have `required`, `description`,
+`default`, `aliases`. Or a JSON Schema `inputSchema` (as MCP), converted to the same fields — what cannot be enforced
+is refused with the reason. Arguments are coerced and clamped before `run()` is called; unknown ones are dropped; a
+missing required one goes back to the model as an error. Text over a string's `maxLength` (default **500**) is an
+error too, with both sizes ("`notes` is 12,981 characters long, over its limit of 12,000: send less in one call"); it
+is never cut, so a JSON payload cannot reach `run()` half-written. Give large-text parameters an explicit
+`maxLength`. Arguments the runtime cannot read (broken or cut-off JSON) are reported to the model and the call is not
+run; values are never guessed.
+
+`run(args, { host, agent, signal, call })` may be async (30 s timeout by default, `timeoutMs` to change). Its return
+value goes to the model: a string as written, anything else as compact JSON, capped at 4,000 characters. Throw (or
+return a message) on failure — the model sees the error and can explain or retry. Keep results short and factual.
 
 ## 3. Register them and ship the default selection
 
+```json
+// ai/index.json
+{ "format": "ai-enablement/1", "tools": ["tools/orders.js", "tools/items.js"], "toolsConfig": "ai-tools.json",
+  "permissions": { "ask": ["cancel_order"] } }
+```
+
 ```js
-createAiAgent({
-  …,
-  tools: appTools,                 // the whole catalog; page-specific ones use `pages`
-  toolsConfig: 'ai-tools.json',    // which are on by default (a URL, an object, or an async function)
-});
+createAiAgent({ …, capabilities: 'ai/index.json', host: { ...store, ordersApi } });
 agent.setPage({ id: 'orders', …, tools: ordersPageTools });   // optional: tools that exist only on this page
 ```
+
+(Without a capability folder: `tools: appTools, toolsConfig: 'ai-tools.json'`, as in 1.x.)
 
 `ai-tools.json` (the format Settings > Tools > "Download ai-tools.json" writes):
 
@@ -127,7 +150,11 @@ agent.setPage({ id: 'orders', …, tools: ordersPageTools });   // optional: too
 A tool's state comes from: the user's choice in Settings > Tools (saved in the browser) > `ai-tools.json` > the tool's
 own `enabled` (default `false`). Only choices that differ from the app's defaults are stored, so an updated
 `ai-tools.json` still reaches users who never touched that tool. To change the defaults: check the boxes in
-Settings > Tools, download `ai-tools.json`, and commit it to the app.
+Settings > Tools, download `ai-tools.json`, and commit it to the app. Keys are **tool** names (validate reports others).
+
+Permission rules (`framework.md`) sit above all this: `deny` blocks a tool whatever the user switches, `ask` always
+confirms, `allow` never does (except `system` tools, which always confirm).
+
 
 ## 4. What the user sees and controls
 

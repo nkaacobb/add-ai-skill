@@ -136,6 +136,7 @@ test('detect: which features the runtime has and the integration uses, so an upg
   write(root, 'src/setup.js', INTEGRATION);
   write(root, 'src/ai-tools.json', '{"tools":{}}');
   write(root, 'src/view.js', "const gl = canvas.getContext('webgl2');");
+  write(root, 'src/ai-upload.js', "import { agent } from './ai-agent-setup.js';\nconst r = new FileReader();\nr.onload = () => agent.ask(`Read this: ${r.result}`);");
   write(root, 'tests/view.test.js', "const gl = canvas.getContext('webgl');");
   write(root, '.htaccess', 'Header set Permissions-Policy "display-capture=()"\nHeader set Content-Security-Policy "default-src \'self\'; img-src \'self\'"');
   const r = detect(root);
@@ -143,6 +144,8 @@ test('detect: which features the runtime has and the integration uses, so an upg
   assert.deepEqual([r.features.tools.inRuntime, r.features.tools.options, r.features.tools.config], [true, ['tools'], ['src/ai-tools.json']], 'tools are there: leave them');
   assert.deepEqual([r.features.memory.inRuntime, r.features.memory.options, r.features.memory.file], [false, [], []], 'memory is to add');
   assert.deepEqual([r.features.vision.inRuntime, r.features.vision.options], [false, []]);
+  assert.deepEqual([r.features.attachments.inRuntime, r.features.attachments.options], [false, []], 'attachments arrive with 1.5');
+  assert.ok(r.hints.some((h) => h.file === 'src/ai-upload.js' && /reads files for the agent itself[^\n]*`readFile` hook/.test(h.hint)), 'app-side file reading is a workaround the + button covers');
   const checks = r.checks.map((c) => `${c.file}: ${c.hint}`).join('\n');
   assert.match(checks, /src\/view\.js: draws with WebGL[^\n]*`screenshot` hook/);
   assert.doesNotMatch(checks, /tests\/view\.test\.js/, 'test files are not the app\'s view');
@@ -159,10 +162,51 @@ test('detect: which features the runtime has and the integration uses, so an upg
   assert.equal(d.status, 'current');
   assert.deepEqual([d.features.memory.inRuntime, d.features.memory.options, d.features.memory.file], [true, ['memoryFile'], ['src/ai-memory.json']]);
   assert.deepEqual([d.features.vision.inRuntime, d.features.vision.options], [true, ['screenshot']]);
+  assert.deepEqual([d.features.attachments.inRuntime, d.features.attachments.options], [true, []], 'on by default; no readFile hook needed');
   assert.deepEqual(d.checks, []);
 
   // No runtime copy in the folder: the features cannot be judged.
   const bare = app();
   write(bare, 'src/setup.js', INTEGRATION);
   assert.equal(detect(bare).features.memory.inRuntime, null);
+});
+
+test('detect: the 2.0 manifest and the 1.x record; capability folders with what is missing; dev-time folders kept apart', () => {
+  const root = app();
+  copyRuntime(root, 'public/ai-agent');
+  write(root, 'public/js/setup.js', INTEGRATION.replace('tools: appTools,', "capabilities: 'ai/index.json', host: app,"));
+  write(root, 'ai-agent.integration.json', JSON.stringify({ skill: 'add-ai-skill', skillVersion: '1.6.0', updated: '2026-09-30' }));
+  write(root, 'public/ai/index.json', JSON.stringify({ format: 'ai-enablement/1', agents: ['agents/writer.md'], skills: ['skills/proofreading', 'skills/gone'], tools: ['tools/doc.js'], toolsConfig: 'ai-tools.json' }));
+  write(root, 'public/ai/agents/writer.md', '---\nname: writer\ndescription: x\n---\n');
+  write(root, 'public/ai/skills/proofreading/SKILL.md', '---\nname: proofreading\ndescription: x\n---\nx');
+  write(root, 'public/ai/tools/doc.js', '// passes createAiAgent({ host }) — a comment, not a second integration\nexport default [];');
+  write(root, '.claude/skills/deploy/SKILL.md', '---\nname: deploy\ndescription: dev-time\n---\n');
+  write(root, '.claude/skills/deploy/index.json', JSON.stringify({ format: 'ai-enablement/1', tools: [] }));
+  write(root, '.github/agents/reviewer.agent.md', '---\nname: reviewer\n---\n');
+  const r = detect(root);
+  assert.equal(r.status, 'current');
+  assert.equal(r.integrations.length, 1, 'a createAiAgent mentioned in a comment is not an integration');
+  assert.equal(r.legacyRecord, 'ai-agent.integration.json');
+  assert.equal(r.manifest, null);
+  assert.deepEqual(r.framework, { adopted: true, manifest: false, legacyRecord: true });
+  assert.deepEqual(r.capabilities.map((c) => [c.file, c.agents, c.skills, c.tools, c.missing]), [['public/ai/index.json', 1, 2, 1, ['skills/gone', 'ai-tools.json']]], 'the index inside .claude/ is not the app\'s');
+  assert.deepEqual(r.devTime.map((d) => d.dir), ['.claude/skills', '.github/agents']);
+  assert.deepEqual(r.features.capabilities.options, ['capabilities', 'host']);
+  assert.equal(r.features.skills.defined, 2);
+  assert.equal(r.features.capabilities.inRuntime, true);
+
+  write(root, 'ai-enablement.json', JSON.stringify({ skill: 'ai-enablement', skillVersion: '2.0.0', updated: '2026-10-02' }));
+  const m = detect(root);
+  assert.equal(m.manifest, 'ai-enablement.json');
+  assert.equal(m.framework.manifest, true);
+});
+
+test('detect: a relay is compared with the skill\'s own relay version, not the runtime\'s', () => {
+  const root = app();
+  copyRuntime(root, 'assets/ai-agent');
+  write(root, 'assets/js/setup.js', INTEGRATION);
+  write(root, 'api/relay.php', fs.readFileSync(path.join(SKILL, 'assets', 'relay', 'relay.php'), 'utf8'));
+  const r = detect(root);
+  assert.equal(r.relays[0].unchanged, true);
+  assert.equal(r.status, 'current', 'the current relay (its own version) is not an upgrade, whatever the runtime version is');
 });

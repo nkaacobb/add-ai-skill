@@ -1,37 +1,42 @@
 <#
 .SYNOPSIS
-  Install or update the add-ai-skill skill for Claude Code, Codex and GitHub Copilot (user-wide).
+  Install or update the ai-enablement skill for Claude Code, Codex and GitHub Copilot (user-wide).
 
 .DESCRIPTION
-  Copies .\add-ai-skill (the folder next to this script) to:
-    ~\.claude\skills\add-ai-skill   Claude Code
-    ~\.agents\skills\add-ai-skill   Codex and GitHub Copilot
-  Re-run it after you change the skill; it replaces the installed copies.
-  Copies installed under the skill's old name (ai-agent-drawer) are removed, so no tool lists the skill twice.
-  Only those two folder names inside each skills directory are ever touched.
+  Copies .\ai-enablement (the folder next to this script) to:
+    ~\.claude\skills\ai-enablement   Claude Code
+    ~\.agents\skills\ai-enablement   Codex and GitHub Copilot
+  Re-run it after you change the skill; it replaces the installed copies of ai-enablement.
+  Other skills in those folders are never touched. Copies installed under the skill's earlier names (add-ai-skill,
+  ai-agent-drawer) are left in place and reported; -RemoveLegacy removes them (so no tool lists the skill twice).
 
 .PARAMETER Targets
   Any of: claude, agents, copilot. Default: claude, agents (which covers all three tools).
   'copilot' adds ~\.copilot\skills — only needed if you use Copilot without ~\.agents\skills.
 
 .PARAMETER Uninstall
-  Remove the installed copies instead.
+  Remove the installed copies of ai-enablement instead.
+
+.PARAMETER RemoveLegacy
+  Also remove copies installed under the earlier names (add-ai-skill, ai-agent-drawer).
 
 .EXAMPLE
   .\install-skill.ps1
   .\install-skill.ps1 -Targets claude
+  .\install-skill.ps1 -RemoveLegacy
   .\install-skill.ps1 -Uninstall
 #>
 [CmdletBinding()]
 param(
   [ValidateSet('claude', 'agents', 'copilot')]
   [string[]] $Targets = @('claude', 'agents'),
-  [switch] $Uninstall
+  [switch] $Uninstall,
+  [switch] $RemoveLegacy
 )
 
 $ErrorActionPreference = 'Stop'
-$name = 'add-ai-skill'
-$legacy = @('ai-agent-drawer')
+$name = 'ai-enablement'
+$legacy = @('add-ai-skill', 'ai-agent-drawer')
 $exclude = @('node_modules', '.git', '.verify', 'chrome-profile')
 $source = (Resolve-Path (Join-Path $PSScriptRoot $name)).Path
 
@@ -69,7 +74,12 @@ foreach ($target in $Targets) {
 
   foreach ($old in $legacy) {
     $oldPath = Join-Path $root $old
-    if (Remove-Installed $oldPath) { Write-Host "Removed   $oldPath (old name)" }
+    if (-not (Test-Path -LiteralPath $oldPath)) { continue }
+    if ($RemoveLegacy) {
+      if (Remove-Installed $oldPath) { Write-Host "Removed   $oldPath (earlier name)" }
+    } elseif (-not $Uninstall) {
+      Write-Host "Kept      $oldPath (earlier name of this skill; -RemoveLegacy removes it)"
+    }
   }
   $had = Remove-Installed $dest
 
@@ -91,8 +101,8 @@ foreach ($target in $Targets) {
 if (-not $Uninstall) {
   Write-Host ''
   Write-Host 'Done. In any project:'
-  Write-Host '  Claude Code : "Use the add-ai-skill skill to build an AI agent into this app"  (or /add-ai-skill)'
-  Write-Host '  Codex       : "$add-ai-skill build an AI agent into this app"'
-  Write-Host '  Copilot     : in agent mode, "/add-ai-skill build an AI agent into this app"'
+  Write-Host '  Claude Code : "Use the ai-enablement skill to build an AI agent into this app"  (or /ai-enablement)'
+  Write-Host '  Codex       : "$ai-enablement build an AI agent into this app"'
+  Write-Host '  Copilot     : in agent mode, "/ai-enablement build an AI agent into this app"'
   Write-Host 'Restart the tool (or start a new session) if it was already running.'
 }

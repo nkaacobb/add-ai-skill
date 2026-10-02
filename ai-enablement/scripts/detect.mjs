@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Is the AI agent already in this app, and at which version? Run it first, every time the skill is used on an app:
+// What of AI Enablement is already in this app, and at which version? Run it first, every time the skill is used on
+// an app — it is the lifecycle's router (install / upgrade / validate / add):
 //
 //   node <skill>/scripts/detect.mjs [app-root] [--json]
 //
@@ -8,13 +9,17 @@
 //     since that release (fingerprints in scripts/release-hashes.json) — unchanged copies can be replaced wholesale;
 //   - relays (relay.php / relay.mjs), their version, edits (1.0 constants, keys or checks added inside the file) and
 //     config files (names only: never their contents, which may hold keys);
-//   - the integration: files that call createAiAgent() (the appId, the options used), the integration record
-//     (ai-agent.integration.json), tool config files (ai-tools.json), memory files (ai-memory.json);
-//   - which features the installed runtime has and which of them the integration uses (tools, memory, vision), so an
-//     upgrade adds only what is missing;
+//   - the integration: files that call createAiAgent() (the appId, the options used), the manifest (ai-enablement.json,
+//     or the 1.x record ai-agent.integration.json), tool config files (ai-tools.json), memory files (ai-memory.json);
+//   - capability folders (an index.json with "format": "ai-enablement/1") and what they name — agents, skills, tool
+//     modules, toolsets — with the paths that are missing (scripts/validate.mjs checks them in depth);
+//   - development-time skill and agent folders (.claude/, .github/, .agents/, .codex/): reported apart, never taken
+//     for the application's own;
+//   - which features the installed runtime has and which of them the integration uses (tools, memory, vision,
+//     attachments, capabilities, agents, skills, workspace), so an upgrade adds only what is missing;
 //   - app code that looks like a workaround a newer runtime covers, and things to check for the new features (a
 //     canvas/WebGL view that wants a screenshot hook, a Permissions-Policy or CSP header) — hints, not certainties.
-// Then it says what to do: build (no agent yet), upgrade (older version), or nothing to upgrade.
+// Then it says what to do: install (nothing yet), upgrade (older version), or validate and add (current).
 // Exit code: 0 always (it only reports).
 
 import fs from 'node:fs';
@@ -38,7 +43,19 @@ export const FEATURES = [
   { id: 'tools', since: '1.2.0', what: 'the agent acts in the app through tools', options: ['tools', 'toolsConfig'], doc: 'references/tools.md' },
   { id: 'memory', since: '1.3.0', what: 'notes kept between conversations (Settings > Memory)', options: ['memoryFile', 'memorySave'], doc: 'references/memory-and-vision.md' },
   { id: 'vision', since: '1.3.0', what: 'screenshots for models that see images (Settings > Vision)', options: ['screenshot', 'screenshotMaxEdge'], doc: 'references/memory-and-vision.md' },
+  { id: 'attachments', since: '1.5.0', what: 'the + button: images and files (PDF, Word, Excel, text…) attached to a question', options: ['attachments', 'readFile'], doc: 'references/memory-and-vision.md' },
+  { id: 'capabilities', since: '1.6.0', what: 'a capability folder (ai/index.json): tools, toolsets, skills, agents, permissions', options: ['capabilities', 'host', 'permissions', 'toolsets'], doc: 'references/framework.md' },
+  { id: 'agents', since: '1.6.0', what: 'agents the user picks from (instructions + skills + tools + permissions)', options: ['agents', 'agent'], doc: 'references/framework.md' },
+  { id: 'skills', since: '1.6.0', what: 'Agent Skills the in-app agent loads when a request matches (SKILL.md)', options: ['skills'], doc: 'references/framework.md' },
+  { id: 'workspace', since: '1.6.0', what: 'development: the in-app agent adds tools itself (scripts/workspace.mjs)', options: ['workspace'], doc: 'references/in-app-authoring.md' },
 ];
+
+/** The manifest an integration leaves (2.0+), and the record 1.x integrations left (read, then renamed on upgrade). */
+export const MANIFEST = 'ai-enablement.json';
+export const LEGACY_RECORD = 'ai-agent.integration.json';
+export const INDEX_FORMAT = 'ai-enablement/1';
+/** Folders that hold development-time capabilities (the coding agent's), not the application's. */
+const DEV_TIME = ['.claude/skills', '.claude/agents', '.github/agents', '.github/skills', '.github/prompts', '.agents/skills', '.codex/skills', '.cursor/rules'];
 
 export function skillInfo() {
   const js = fs.readFileSync(path.join(SKILL, 'assets', 'ai-agent', 'ai-agent.js'), 'utf8');
@@ -46,7 +63,32 @@ export function skillInfo() {
   try { pkg = JSON.parse(fs.readFileSync(path.join(SKILL, 'package.json'), 'utf8')); } catch { /* optional */ }
   let hashes = { releases: {} };
   try { hashes = JSON.parse(fs.readFileSync(path.join(SKILL, 'scripts', 'release-hashes.json'), 'utf8')); } catch { /* optional */ }
-  return { runtimeVersion: js.match(/export const VERSION = '([^']+)'/)?.[1] || '', skillVersion: pkg.version || '', releases: hashes.releases || {} };
+  const relayVersions = {};
+  try { relayVersions['relay.php'] = fs.readFileSync(path.join(SKILL, 'assets', 'relay', 'relay.php'), 'utf8').match(/AIA_RELAY_VERSION = '([^']+)'/)?.[1] || ''; } catch { /* optional */ }
+  try { relayVersions['relay.mjs'] = fs.readFileSync(path.join(SKILL, 'assets', 'relay', 'relay.mjs'), 'utf8').match(/RELAY_VERSION = '([^']+)'/)?.[1] || ''; } catch { /* optional */ }
+  return { runtimeVersion: js.match(/export const VERSION = '([^']+)'/)?.[1] || '', skillVersion: pkg.version || '', releases: hashes.releases || {}, relayVersions };
+}
+
+/** A capability index: what it names, and which of those paths are missing (a quick look; validate.mjs goes deeper). */
+function capabilityInfo(file, rel) {
+  let data;
+  try { data = JSON.parse(read(file)); } catch { return { file: rel, error: 'not valid JSON' }; }
+  const dir = path.dirname(file);
+  const list = (k) => (Array.isArray(data[k]) ? data[k].filter((x) => typeof x === 'string') : []);
+  const missing = [];
+  const exists = (p) => fs.existsSync(path.resolve(dir, ...p.split('/')));
+  for (const p of list('agents')) if (!exists(p)) missing.push(p);
+  for (const p of list('skills')) if (!exists(/\.md$/i.test(p) ? p : `${p.replace(/\/+$/, '')}/SKILL.md`)) missing.push(p);
+  for (const p of list('tools')) if (!exists(p)) missing.push(p);
+  for (const p of list('toolsets')) if (!exists(p)) missing.push(p);
+  for (const k of ['toolsConfig', 'memory']) if (typeof data[k] === 'string' && !exists(data[k])) missing.push(data[k]);
+  return {
+    file: rel,
+    dir: path.dirname(rel) === '.' ? '.' : path.dirname(rel),
+    agents: list('agents').length, skills: list('skills').length, tools: list('tools').length, toolsets: list('toolsets').length,
+    toolsConfig: typeof data.toolsConfig === 'string' ? data.toolsConfig : '', memory: typeof data.memory === 'string' ? data.memory : '',
+    permissions: !!data.permissions, defaultAgent: data.defaultAgent || '', missing,
+  };
 }
 
 function walk(root) {
@@ -145,6 +187,9 @@ function workaroundHints(file, text) {
   if (/(fetch|probe)[\s\S]{0,300}available[\s\S]{0,300}createAiAgent|relayUrl[\s\S]{0,200}available/.test(text)) hints.push('probes the relay before createAiAgent: the `relayProbe` option (1.1) does this');
   if (/keydown[\s\S]{0,400}(aia-|ai-agent)/.test(text) && !/aia-scope/.test(text)) hints.push('filters key events for the drawer: typing is isolated by the runtime since 1.1 (isolateKeys)');
   if (/\[data-aia-theme|:not\(\[data-aia-theme/.test(text)) hints.push('theme overrides with high-specificity selectors: since 1.1 a plain `.aia-scope { --aia-… }` rule wins in light and dark');
+  if (/createAiAgent|agent\.ask\(/.test(text) && /FileReader|readAsText|readAsDataURL|type=["'`]file["'`]|pdfjs|getDocument\(|mammoth|\bXLSX\.read/.test(text)) {
+    hints.push('reads files for the agent itself (file input, FileReader, pdf.js, mammoth, SheetJS): since 1.5 the + button attaches images and files to a question; keep a reader only for formats the runtime does not read, as the `readFile` hook');
+  }
   return hints.map((h) => ({ file, hint: h }));
 }
 
@@ -176,6 +221,15 @@ export function detect(appRoot, skill = skillInfo()) {
   const hints = [];
   const checks = [];
   const runtimeDirs = [];
+  const capabilities = [];
+  const devTime = DEV_TIME.map((d) => {
+    const dir = path.join(root, ...d.split('/'));
+    let n = 0;
+    try { n = fs.readdirSync(dir, { withFileTypes: true }).filter((e) => !e.name.startsWith('.')).length; } catch { return null; }
+    return { dir: d, entries: n };
+  }).filter(Boolean);
+  // Anything inside a dot-folder (.claude, .github, .agents…) belongs to the development tools, not to the app.
+  const inDotDir = (f) => rel(f).split('/').slice(0, -1).some((p) => p.startsWith('.'));
 
   for (const f of files) {
     const base = path.basename(f);
@@ -200,10 +254,15 @@ export function detect(appRoot, skill = skillInfo()) {
       continue;
     }
     if (/^relay\.config\.(php|json|mjs)$/.test(base)) { relayConfigs.push(rel(f)); continue; }
-    if (base === 'ai-agent.integration.json') {
+    if (base === MANIFEST || base === LEGACY_RECORD) {
       let data = null;
       try { data = JSON.parse(read(f)); } catch { data = { error: 'not valid JSON' }; }
-      records.push({ file: rel(f), data });
+      records.push({ file: rel(f), data, legacy: base === LEGACY_RECORD });
+      continue;
+    }
+    // A capability index carries "format": "ai-enablement/1" (templates and scaffold.mjs write it; tools find it by it).
+    if (base === 'index.json' && !inDotDir(f)) {
+      if (read(f).includes(INDEX_FORMAT)) capabilities.push(capabilityInfo(f, rel(f)));
       continue;
     }
     if (base === 'ai-tools.json') { toolConfigs.push(rel(f)); continue; }
@@ -212,7 +271,9 @@ export function detect(appRoot, skill = skillInfo()) {
     if (!CODE_EXT.has(path.extname(f).toLowerCase())) continue;
     const t = read(f);
     if (!t) continue;
-    if (/createAiAgent\s*\(/.test(t) && !/export function createAiAgent/.test(t)) integrations.push({ ...integrationInfo(f, t), file: rel(f) });
+    // A call in code, not one mentioned in a comment (tool modules and docs often name createAiAgent).
+    const code = t.split('\n').filter((l) => !/^\s*(\/\/|\/?\*)/.test(l)).join('\n');
+    if (/createAiAgent\s*\(/.test(code) && !/export function createAiAgent/.test(t)) integrations.push({ ...integrationInfo(f, code), file: rel(f) });
     if (/createAiAgent|contextChanged|aia-|ai-agent/.test(t)) hints.push(...workaroundHints(rel(f), t));
     if (checks.length < 12 && !/(^|\/)(tests?|__tests__|spec|e2e)\/|\.(test|spec)\.[a-z]+$/i.test(rel(f))) checks.push(...featureHints(rel(f), t));
   }
@@ -229,7 +290,8 @@ export function detect(appRoot, skill = skillInfo()) {
   if (!runtimes.length && !integrations.length) status = 'none';
   else if (!runtimes.length) status = 'integration-without-runtime';
   else if (cmpVersion(oldest, skill.runtimeVersion) < 0) status = 'upgrade';
-  else if (relays.some((r) => cmpVersion(r.version, skill.runtimeVersion) < 0)) status = 'upgrade';
+  // A relay is compared with the skill's own copy of that relay (relays keep their own version numbers).
+  else if (relays.some((r) => cmpVersion(r.version, skill.relayVersions?.[r.kind] || skill.runtimeVersion) < 0)) status = 'upgrade';
   else status = 'current';
 
   // Per feature: is it in the installed runtime, and does the integration use it? (An upgrade adds what is missing.)
@@ -244,17 +306,29 @@ export function detect(appRoot, skill = skillInfo()) {
   }
   features.tools.config = toolConfigs;
   features.memory.file = memoryFiles;
+  features.capabilities.index = capabilities.map((c) => c.file);
+  features.agents.defined = capabilities.reduce((n, c) => n + (c.agents || 0), 0);
+  features.skills.defined = capabilities.reduce((n, c) => n + (c.skills || 0), 0);
   const hasScreenshotHook = features.vision.options.includes('screenshot');
+  const manifest = records.find((x) => !x.legacy) || null;
+  const legacyRecord = records.find((x) => x.legacy) || null;
+  // Framework adoption: an agent is there (status upgrade/current) but no capability folder holds what it can do yet.
+  const adopted = capabilities.length > 0 || used.has('capabilities');
 
   return {
     app: root,
-    skill: { skillVersion: skill.skillVersion, runtimeVersion: skill.runtimeVersion },
+    skill: { skillVersion: skill.skillVersion, runtimeVersion: skill.runtimeVersion, relayVersions: skill.relayVersions || {} },
     status,
     runtimes: runtimes.map((r) => ({ ...r, extra: r.extra.slice(0, 20) })),
     relays,
     relayConfigs,
     integrations,
     records,
+    manifest: manifest ? manifest.file : null,
+    legacyRecord: legacyRecord ? legacyRecord.file : null,
+    capabilities,
+    devTime,
+    framework: { adopted, manifest: !!manifest, legacyRecord: !!legacyRecord },
     toolConfigs,
     memoryFiles,
     hints,
@@ -264,43 +338,66 @@ export function detect(appRoot, skill = skillInfo()) {
   };
 }
 
+/** One Features line's "used by the integration?" part. */
+function featureUse(ft, f) {
+  const usedBy = [...f.options, ...(ft.id === 'tools' ? f.config : ft.id === 'memory' ? f.file : ft.id === 'capabilities' ? f.index : [])];
+  if (ft.id === 'agents' && f.defined) usedBy.push(`${f.defined} in the capability folder`);
+  if (ft.id === 'skills' && f.defined) usedBy.push(`${f.defined} in the capability folder`);
+  if (usedBy.length) return `used: ${usedBy.join(', ')}`;
+  const later = {
+    tools: 'not used — the app can gain tools',
+    memory: f.inRuntime ? 'on by default; no app memory file yet (ai-memory.json)' : 'to add: comes with the runtime; seed ai-memory.json',
+    vision: f.inRuntime ? 'on by default with the browser\'s screen capture; no `screenshot` hook' : 'to add: comes with the runtime; decide on a `screenshot` hook',
+    attachments: f.inRuntime ? 'on by default (the + button); no app `readFile` hook' : 'to add: comes with the runtime (the + button); a `readFile` hook only for the app\'s own file formats',
+    capabilities: 'not adopted — offer the capability folder (references/upgrading.md, "Adopting the framework")',
+    agents: 'none — the app has its one implicit agent; offer agents where users do distinct kinds of work',
+    skills: 'none — offer skills for multi-step work the app\'s users repeat',
+    workspace: 'off — development only (references/in-app-authoring.md)',
+  };
+  return later[ft.id] || 'not used';
+}
+
 function report(r) {
   const out = [];
   const say = (s = '') => out.push(s);
-  say(`add-ai-skill ${r.skill.skillVersion} (runtime ${r.skill.runtimeVersion}) · app: ${r.app}`);
+  say(`ai-enablement ${r.skill.skillVersion} (runtime ${r.skill.runtimeVersion}) · app: ${r.app}`);
   say('');
+  for (const d of r.devTime) say(`Dev-time  ${d.dir}/  (${d.entries} entr${d.entries === 1 ? 'y' : 'ies'}: the coding agent's, not the application's — leave them alone)`);
   if (r.status === 'none') {
-    say('No AI agent found in this app: follow the normal workflow (SKILL.md steps 1-13).');
+    if (r.devTime.length) say('');
+    say('No AI agent found in this app: INSTALL — follow the normal workflow (SKILL.md, "Install").');
     return out.join('\n');
   }
   for (const rt of r.runtimes) {
     const state = !rt.known ? 'unknown release (no fingerprints): compare with the app\'s git history before replacing'
       : rt.modified.length || rt.missing.length ? `EDITED since ${rt.version}: ${[...rt.modified.map((f) => `${f} (changed)`), ...rt.missing.map((f) => `${f} (missing)`)].join(', ')}`
-        : `unchanged ${rt.version} copy: safe to replace wholesale`;
+        : `unchanged ${rt.version} copy: framework-owned, safe to replace wholesale`;
     say(`Runtime   ${rt.dir}  v${rt.version}  — ${state}${rt.extra.length ? `; extra files: ${rt.extra.join(', ')}` : ''}`);
   }
   if (r.runtimes.length > 1) say('          More than one runtime copy: find out which one the app loads; remove the others.');
   for (const rl of r.relays) {
-    say(`Relay     ${rl.file}  v${rl.version}  — ${rl.unchanged ? 'unchanged copy' : 'EDITED (or an unknown version)'}`);
+    const current = r.skill.relayVersions?.[rl.kind];
+    say(`Relay     ${rl.file}  v${rl.version}${current && cmpVersion(rl.version, current) < 0 ? ` (current: ${current})` : ''}  — ${rl.unchanged ? 'unchanged copy' : 'EDITED (or an unknown version)'}`);
     for (const e of rl.edits) say(`          · ${e}`);
   }
-  for (const c of r.relayConfigs) say(`Config    ${c}  (relay config: keep it; contents not read)`);
+  for (const c of r.relayConfigs) say(`Config    ${c}  (relay config: app-owned; keep it; contents not read)`);
   for (const i of r.integrations) say(`Agent     ${i.file}  createAiAgent(appId: ${i.appId ? `'${i.appId}'` : '?'})  options: ${i.options.join(', ') || '—'}`);
   if (r.integrations.length > 1) say('          More than one createAiAgent() call: make sure only one runs (one agent per app).');
-  for (const rec of r.records) say(`Record    ${rec.file}  (skill ${rec.data?.skillVersion || '?'}, updated ${rec.data?.updated || '?'})`);
-  if (!r.records.length) say('Record    none yet — write ai-agent.integration.json at the end of the upgrade (references/upgrading.md).');
+  for (const c of r.capabilities) {
+    if (c.error) { say(`Capabilities ${c.file}  — ${c.error}`); continue; }
+    say(`Capabilities ${c.file}  — ${c.agents} agent(s), ${c.skills} skill(s), ${c.tools} tool module(s), ${c.toolsets} toolset file(s)${c.toolsConfig ? `, tools config ${c.toolsConfig}` : ''}${c.memory ? `, memory ${c.memory}` : ''}${c.permissions ? ', permissions' : ''}`);
+    if (c.missing.length) say(`          MISSING: ${c.missing.join(', ')}`);
+  }
+  for (const rec of r.records) {
+    say(`${rec.legacy ? 'Record  ' : 'Manifest'}  ${rec.file}  (skill ${rec.data?.skill || '?'} ${rec.data?.skillVersion || '?'}, updated ${rec.data?.updated || '?'})${rec.legacy ? ' — the 1.x record: rename it to ai-enablement.json and add the 2.0 fields (references/upgrading.md)' : ''}`);
+  }
+  if (!r.records.length) say('Manifest  none yet — write ai-enablement.json at the end (references/upgrading.md, "The manifest").');
   say('');
-  say(`Features  (in the installed runtime? · used by the integration?)`);
+  say('Features  (in the installed runtime? · used by the integration?)');
   for (const ft of FEATURES) {
     const f = r.features[ft.id];
     const has = f.inRuntime === null ? `runtime copy not found (needs ${ft.since}+)` : f.inRuntime ? 'in the runtime' : `NOT in the runtime (arrives with ${ft.since})`;
-    const extra = ft.id === 'tools' ? f.config : ft.id === 'memory' ? f.file : [];
-    const usedBy = [...f.options, ...extra];
-    const use = usedBy.length ? `used: ${usedBy.join(', ')}`
-      : ft.id === 'tools' ? 'not used — the app can gain tools'
-        : ft.id === 'memory' ? (f.inRuntime ? 'on by default; no app memory file yet (ai-memory.json + memoryFile)' : 'to add: comes with the runtime; seed ai-memory.json')
-          : (f.inRuntime ? 'on by default with the browser\'s screen capture; no `screenshot` hook' : 'to add: comes with the runtime; decide on a `screenshot` hook');
-    say(`  ${ft.id.padEnd(7)} ${has} · ${use}  (${ft.doc})`);
+    say(`  ${ft.id.padEnd(12)} ${has} · ${featureUse(ft, f)}  (${ft.doc})`);
   }
   if (r.hints.length) {
     say('');
@@ -316,14 +413,16 @@ function report(r) {
   if (r.status === 'upgrade') {
     const from = r.runtimes.map((x) => x.version).sort(cmpVersion)[0];
     say(`=> UPGRADE: an agent is already built in (runtime ${from}). Do NOT build a second one. Follow references/upgrading.md,`);
-    say(`   reading CHANGELOG.md from ${from} to ${r.skill.runtimeVersion}.`);
+    say(`   reading CHANGELOG.md from ${from} to ${r.skill.runtimeVersion}.${r.framework.adopted ? '' : ' Then offer the capability folder (adoption is optional).'}`);
   } else if (r.status === 'current') {
-    say(`=> CURRENT: the runtime is up to date (${r.skill.runtimeVersion}). Offer the features the app does not use yet (references/upgrading.md, U6),`);
-    say('   or make the change the user asked for. Do NOT build a second agent.');
+    say(`=> CURRENT: the runtime is up to date (${r.skill.runtimeVersion}). VALIDATE (node <skill>/scripts/validate.mjs ${r.capabilities.length ? '<app-root>' : 'once there is a capability folder'}), then make the`);
+    say('   change the user asked for (add a tool, a skill, an agent: references/capabilities.md) or offer what the app does not use yet');
+    say('   (references/upgrading.md, U6). Do NOT build a second agent.');
   } else {
     say('=> An integration calls createAiAgent() but no runtime copy was found (bundled from a package, or outside this folder).');
     say('   Find where the runtime comes from before changing anything. Do NOT build a second agent.');
   }
+  if (r.framework.legacyRecord && !r.framework.manifest) say('   The record is the 1.x ai-agent.integration.json: write ai-enablement.json in its place.');
   return out.join('\n');
 }
 

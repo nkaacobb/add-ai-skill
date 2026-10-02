@@ -65,7 +65,7 @@ export function parseMemoryFile(json, { maxChars = MEMORY_LIMITS.chars, max = ME
 /** The memories as the JSON file an app ships (see parseMemoryFile). */
 export function exportMemoryFile(items) {
   return {
-    $comment: 'ai-agent-drawer memory: notes the agent keeps between conversations. Load with createAiAgent({ memoryFile: \'ai-memory.json\' }). Users can add to and edit them in Settings > Memory.',
+    $comment: 'AI Enablement memory (the agent drawer): notes the agent keeps between conversations. Load with createAiAgent({ memoryFile: \'ai-memory.json\' }) or name the file as "memory" in the capability index. Users can add to and edit them in Settings > Memory.',
     version: 1,
     memories: items.map((m) => ({ id: m.id, text: m.text, created: m.created, ...(m.updated ? { updated: m.updated } : {}), source: m.source })),
   };

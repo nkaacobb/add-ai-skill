@@ -1,24 +1,27 @@
 #!/usr/bin/env sh
-# Install or update the add-ai-skill skill for Claude Code, Codex and GitHub Copilot (user-wide).
+# Install or update the ai-enablement skill for Claude Code, Codex and GitHub Copilot (user-wide).
 #
-#   ./install-skill.sh                 install to ~/.claude/skills and ~/.agents/skills (covers all three tools)
-#   ./install-skill.sh claude          only Claude Code's folder (claude | agents | copilot, any combination)
-#   ./install-skill.sh --uninstall     remove the installed copies
+#   ./install-skill.sh                   install to ~/.claude/skills and ~/.agents/skills (covers all three tools)
+#   ./install-skill.sh claude            only Claude Code's folder (claude | agents | copilot, any combination)
+#   ./install-skill.sh --remove-legacy   also remove copies installed under the earlier names
+#   ./install-skill.sh --uninstall       remove the installed copies of ai-enablement
 #
-# Copies installed under the skill's old name (ai-agent-drawer) are removed, so no tool lists the skill twice.
-# Only those two folder names inside each skills directory are ever touched.
+# Other skills in those folders are never touched. Copies installed under the skill's earlier names (add-ai-skill,
+# ai-agent-drawer) are left in place and reported; --remove-legacy removes them (so no tool lists the skill twice).
 set -eu
 
-NAME="add-ai-skill"
-LEGACY="ai-agent-drawer"
+NAME="ai-enablement"
+LEGACY="add-ai-skill ai-agent-drawer"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SOURCE="$HERE/$NAME"
 UNINSTALL=0
+REMOVE_LEGACY=0
 TARGETS=""
 
 for arg in "$@"; do
   case "$arg" in
     --uninstall) UNINSTALL=1 ;;
+    --remove-legacy) REMOVE_LEGACY=1 ;;
     claude|agents|copilot) TARGETS="$TARGETS $arg" ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
@@ -50,7 +53,12 @@ for target in $TARGETS; do
   fi
 
   for old in $LEGACY; do
-    if remove_installed "$ROOT/$old"; then echo "Removed   $ROOT/$old (old name)"; fi
+    [ -e "$ROOT/$old" ] || continue
+    if [ "$REMOVE_LEGACY" -eq 1 ]; then
+      if remove_installed "$ROOT/$old"; then echo "Removed   $ROOT/$old (earlier name)"; fi
+    elif [ "$UNINSTALL" -eq 0 ]; then
+      echo "Kept      $ROOT/$old (earlier name of this skill; --remove-legacy removes it)"
+    fi
   done
   HAD=0
   if remove_installed "$DEST"; then HAD=1; fi
@@ -69,7 +77,7 @@ done
 if [ "$UNINSTALL" -eq 0 ]; then
   echo
   echo 'Done. In any project:'
-  echo '  Claude Code : "Use the add-ai-skill skill to build an AI agent into this app"  (or /add-ai-skill)'
-  echo '  Codex       : "$add-ai-skill build an AI agent into this app"'
-  echo '  Copilot     : in agent mode, "/add-ai-skill build an AI agent into this app"'
+  echo '  Claude Code : "Use the ai-enablement skill to build an AI agent into this app"  (or /ai-enablement)'
+  echo '  Codex       : "$ai-enablement build an AI agent into this app"'
+  echo '  Copilot     : in agent mode, "/ai-enablement build an AI agent into this app"'
 fi

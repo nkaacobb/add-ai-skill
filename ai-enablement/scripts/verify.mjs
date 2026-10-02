@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Verify an ai-agent-drawer integration in a real (headless) browser. Zero dependencies; Node 22+; Edge, Chrome or
+// Verify an AI Enablement integration (the agent drawer) in a real (headless) browser. Zero dependencies; Node 22+; Edge, Chrome or
 // Chromium installed.
 //
 //   node <skill>/scripts/verify.mjs <page-url> [options]
@@ -25,8 +25,10 @@
 //   typing      a space and letters typed in the composer land in the composer (host shortcuts do not steal them)
 //   context     Settings > Context: estimated size of the first request
 //   tools       the tool catalog (on / off / usable here); runs the reading tools that need no arguments
+//   capabilities the capability index: agents, skills, toolsets, problems loading them, the dev workspace
 //   memory      the memories the agent starts with (the app's memory file + this browser's)
 //   vision      takes one screenshot the way the camera button does: the app's hook, or the browser's screen capture
+//   attachments the + button opens its menu (Attach an image · Upload a file); a small text file attaches as text
 //   layout@W    at each width: no horizontal overflow, nothing under the drawer, the toggle still visible
 //   ask         "Read the page" receipt, flag synced                                         (needs a model)
 //   change      after --change the flag turns "dirty"; the next question re-reads the page  (needs a model)
@@ -217,6 +219,27 @@ async function main() {
       record('tools', failed.length ? 'fail' : 'pass', `${tl.list.length} tools (${on} on, ${tl.list.length - on} off, ${here} usable here); reading tools ran: ${ran.join(', ') || 'none without arguments'}${failed.length ? `; FAILED: ${failed.map((r) => `${r[0]}: ${r[2]}`).join('; ')}` : ''}`);
     }
 
+    // Capabilities (AI Enablement, runtime 1.6+): agents, skills, toolsets from the capability index, and what did not
+    // load. Tool modules that only import in the browser (validate.mjs could not check them) are checked here.
+    const cap = await page.evaluate(`(async () => {
+      let a = null; try { a = (${O.agent}) || null; } catch {}
+      if (!a) return null;
+      await a.ready;
+      if (!a.capabilities) return { old: true };
+      return {
+        index: a.capabilities.index(), problems: a.capabilities.problems(),
+        agents: a.agents.list().filter((x) => !x.implicit).map((x) => x.name + (x.active ? ' (active)' : '')),
+        skills: a.skills.list().map((s) => s.name), toolsets: a.tools.toolsets().map((t) => t.name),
+        workspace: a.workspace() ? a.workspace().aiDir : '',
+      };
+    })()`);
+    if (!cap) record('capabilities', 'skip', 'agent object not reachable (pass --agent)');
+    else if (cap.old) record('capabilities', 'skip', 'this runtime has no capability index (older than 1.6)');
+    else if (!cap.index && !cap.agents.length && !cap.skills.length && !cap.toolsets.length) record('capabilities', 'info', 'no capability index: tools come from the integration itself (adopting ai/index.json is optional)');
+    else {
+      record('capabilities', cap.problems.length ? 'fail' : 'pass', `${cap.index ? `${cap.index.replace(/^https?:\/\/[^/]+/, '')}: ` : ''}agents ${cap.agents.join(', ') || 'none (one implicit agent)'}; skills ${cap.skills.join(', ') || 'none'}; toolsets ${cap.toolsets.join(', ') || 'none'}${cap.workspace ? `; workspace connected (writes to ${cap.workspace}/)` : ''}${cap.problems.length ? `; PROBLEMS: ${cap.problems.join(' | ').slice(0, 600)}` : ''}`);
+    }
+
     // Memory: what the agent knows from the start.
     const mem = await page.evaluate(`(async () => {
       let a = null; try { a = (${O.agent}) || null; } catch {}
@@ -250,6 +273,31 @@ async function main() {
     else if (vis.hidden) record('vision', 'info', vis.vision ? 'no camera button: screenshots are switched off for this app, or this browser cannot capture the page' : 'vision is switched off (Settings > Vision, or defaults.vision: false): no camera button');
     else if (!vis.shot) record('vision', 'fail', `the screenshot failed: ${vis.errors.join(' | ') || 'no picture came back'}`);
     else record('vision', 'pass', `${vis.shot.width} × ${vis.shot.height} px from ${vis.shot.source === 'app' ? 'the application\'s screenshot hook' : 'the browser\'s screen capture (users are asked to share the tab)'}; the agent may take screenshots on its own: ${vis.auto ? 'yes' : 'no (camera button only)'}`);
+
+    // Attachments: the + menu, and one small text file attached the way the menu attaches it (then removed again).
+    const att = await page.evaluate(`(async () => {
+      let a = null; try { a = (${O.agent}) || null; } catch {}
+      const plus = document.querySelector('.aia-drawer .aia-plus-btn');
+      if (!plus) return { old: true };
+      if (plus.closest('.aia-plus').hidden) return { off: true };
+      plus.click();
+      const menu = document.querySelector('.aia-drawer .aia-attach-menu');
+      const open = !menu.hidden;
+      const items = [...menu.querySelectorAll('.aia-menu-item')].map((b) => (b.querySelector('b')?.textContent || '') + (b.disabled ? ' (off: text-only model)' : ''));
+      if (!menu.hidden) plus.click();
+      if (!a || typeof a.attach !== 'function') return { open, items, file: null };
+      const before = document.querySelectorAll('.aia-drawer .aia-error').length;
+      const [r] = await a.attach([new File(['verify.mjs: a test attachment.\\nSecond line.'], 'verify-check.txt', { type: 'text/plain' })]);
+      const errors = [...document.querySelectorAll('.aia-drawer .aia-error')].slice(before).map((e) => e.textContent.trim());
+      const chip = !!document.querySelector('.aia-drawer .aia-attach .aia-file');
+      document.querySelectorAll('.aia-drawer .aia-attach [data-file-remove]').forEach((b) => b.click());
+      return { open, items, file: r, chip, errors, maxChars: a.settings.get().maxFileChars };
+    })()`);
+    if (att.old) record('attachments', 'skip', 'this runtime has no + button (older than 1.5)');
+    else if (att.off) record('attachments', 'info', 'attachments are switched off for this app (attachments: false)');
+    else if (!att.open || att.items.length !== 2) record('attachments', 'fail', `the + button did not open its menu (items: ${att.items.join(', ') || 'none'})`);
+    else if (att.file === null && att.errors?.length) record('attachments', 'fail', `attaching a text file failed: ${att.errors.join(' | ')}`);
+    else record('attachments', 'pass', `the + menu offers ${att.items.join(' · ')}${att.file ? `; a text file attached as ${att.file.kind} (${att.file.chars} chars, chip ${att.chip ? 'shown' : 'MISSING'}); Max file content ${Number(att.maxChars).toLocaleString('en-US')} chars` : ' (agent object not reachable: pass --agent to attach a file)'}`);
 
     // Layout at each width.
     for (const w of O.widths) {

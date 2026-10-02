@@ -15,9 +15,12 @@
 // Transcript record: { id, role: 'user'|'assistant', content, at,
 //                      snapshot?: { hash, text?, pageId, pageTitle, chars, totalChars, truncated },
 //                      sync?: 'attached'|'unchanged'|'off'|'empty',
-//                      shots?: [{ id, thumb, width, height }]   screenshots attached to a question (ui/capture.js) }
+//                      shots?: [{ id, thumb, width, height, name?, kind? }]   images attached to a question: screenshots
+//                              (ui/capture.js), or image files the user attached (kind 'image', with their name)
+//                      files?: [FileRecord]   documents the user attached, with their text (core/files.js) }
 
 import { shortHash } from './hash.js';
+import { fileBlock, fileStub } from './files.js';
 
 export const DEFAULT_HISTORY_MESSAGES = 20;
 /** Screenshots are large: only the newest questions that carry one are sent with their image. */
@@ -109,6 +112,43 @@ export function supersededStub(snapshot) {
   return `[Page snapshot ${shortHash(snapshot.hash)} of "${snapshot.pageTitle || snapshot.pageId}" omitted here: a newer snapshot appears later in the conversation.]`;
 }
 
+const isImageFile = (s) => s.kind === 'image' || !!s.name;
+const quoted = (name) => `"${String(name || 'image').replace(/["\n\r]/g, ' ').slice(0, 120)}"`;
+const listText = (items) => (items.length < 3 ? items.join(' and ') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
+
+/** "a screenshot of the user's screen (…) and the image file "x.png"": what a set of attached images is. */
+function describeImages(shots) {
+  const screens = shots.filter((s) => !isImageFile(s)).length;
+  const items = [];
+  if (screens) items.push(`${screens === 1 ? 'a screenshot' : `${screens} screenshots`} of the user's screen (taken when this message was sent)`);
+  for (const s of shots.filter(isImageFile)) items.push(`the image file ${quoted(s.name)}`);
+  return listText(items);
+}
+
+/** The line that tells the model which images a question carried (`sent`: those still included). */
+export function imagesNote(shots, sent) {
+  const n = shots.length;
+  if (!shots.some(isImageFile)) {
+    // Screenshots only: the wording of earlier versions.
+    return sent.length
+      ? `[${sent.length === 1 ? 'A screenshot' : `${sent.length} screenshots`} of the user's screen, taken when this message was sent, ${sent.length === 1 ? 'is' : 'are'} attached.]`
+      : `[${n === 1 ? 'A screenshot was' : `${n} screenshots were`} attached to this message; ${n === 1 ? 'it is' : 'they are'} not included any more.]`;
+  }
+  const gone = shots.filter((s) => !sent.includes(s));
+  const parts = [];
+  if (sent.length) parts.push(`Attached to this message: ${describeImages(sent)}.`);
+  if (gone.length) {
+    const what = describeImages(gone);
+    parts.push(`${what[0].toUpperCase()}${what.slice(1)} ${gone.length === 1 ? 'was' : 'were'} attached to this message but ${gone.length === 1 ? 'is' : 'are'} not included any more.`);
+  }
+  return `[${parts.join(' ')}]`;
+}
+
+/** Does the part of the transcript that will be sent carry attached files? (The system prompt then explains them.) */
+export function hasFiles(messages = [], historyMessages = DEFAULT_HISTORY_MESSAGES) {
+  return messages.slice(windowStart(messages.length, historyMessages)).some((m) => m?.role === 'user' && Array.isArray(m.files) && m.files.length > 0);
+}
+
 /**
  * Build the provider-neutral messages for a request.
  * @param {object} o
@@ -116,8 +156,10 @@ export function supersededStub(snapshot) {
  * @param {number} o.historyMessages how many transcript entries are sent
  * @param {string} o.viewText        current view state (cursor, selection…), attached to the new question only
  * @param {string|null} o.unchangedHash  set when the screen matches an earlier snapshot, to say so explicitly
- * @param {((shot) => ({mime, data}|null))|null} [o.imageFor]  the image of a screenshot while it is still in memory;
- *        null when the model cannot see images. Only the newest `imageMessages` questions with screenshots carry them.
+ * @param {((shot) => ({mime, data}|null))|null} [o.imageFor]  the image of a screenshot (or attached image file) while
+ *        it is still in memory; null when the model cannot see images. Only the newest `imageMessages` questions with
+ *        images carry them. Attached files' text goes with its question while that question is in the window; a file
+ *        attached again later (same content) is sent with the later question only.
  * @param {number} [o.imageMessages]
  * @returns {Array<{role: 'user'|'assistant', content: string, images?: Array<{mime, data}>}>}
  */
@@ -127,14 +169,19 @@ export function buildRequestMessages({ messages = [], historyMessages = DEFAULT_
   const latest = latestSnapshot(windowed, 0);
   const lastIndex = windowed.length - 1;
 
-  // Which questions still send their screenshots: the newest ones whose images are available.
+  // Which questions still send their images: the newest ones whose images are available.
   const imagesAt = new Map();
   for (let i = lastIndex; i >= 0 && imagesAt.size < Math.max(0, imageMessages) && imageFor; i--) {
     const m = windowed[i];
     if (m.role !== 'user' || !Array.isArray(m.shots) || !m.shots.length) continue;
-    const images = m.shots.map((s) => imageFor(s)).filter(Boolean);
-    if (images.length) imagesAt.set(i, images);
+    const sent = m.shots.map((shot) => ({ shot, image: imageFor(shot) })).filter((x) => x.image);
+    if (sent.length) imagesAt.set(i, sent);
   }
+  // A file attached more than once (same content) is sent with its newest question only.
+  const lastFileAt = new Map();
+  windowed.forEach((m, i) => {
+    if (m.role === 'user' && Array.isArray(m.files)) for (const f of m.files) if (f?.hash) lastFileAt.set(f.hash, i);
+  });
 
   return windowed.map((m, i) => {
     if (m.role !== 'user') return { role: 'assistant', content: `${actionsLine(m.actions)}${String(m.content ?? '')}` };
@@ -147,14 +194,16 @@ export function buildRequestMessages({ messages = [], historyMessages = DEFAULT_
       if (!m.snapshot && unchangedHash) parts.push(`[The screen is unchanged since page snapshot ${shortHash(unchangedHash)}: it is still current.]`);
       if (viewText) parts.push(`<view_state>\n${viewText}\n</view_state>`);
     }
-    const images = imagesAt.get(i);
-    if (Array.isArray(m.shots) && m.shots.length) {
-      const n = m.shots.length;
-      parts.push(images
-        ? `[${images.length === 1 ? 'A screenshot' : `${images.length} screenshots`} of the user's screen, taken when this message was sent, ${images.length === 1 ? 'is' : 'are'} attached.]`
-        : `[${n === 1 ? 'A screenshot was' : `${n} screenshots were`} attached to this message; ${n === 1 ? 'it is' : 'they are'} not included any more.]`);
+    for (const f of Array.isArray(m.files) ? m.files : []) {
+      if (!f) continue;
+      if (typeof f.text !== 'string') parts.push(fileStub(f, 'gone'));
+      else if (f.hash && lastFileAt.get(f.hash) !== i) parts.push(fileStub(f, 'repeated'));
+      else parts.push(fileBlock(f));
     }
+    const sent = imagesAt.get(i) || [];
+    if (Array.isArray(m.shots) && m.shots.length) parts.push(imagesNote(m.shots, sent.map((x) => x.shot)));
     parts.push(String(m.content ?? ''));
-    return images ? { role: 'user', content: parts.join('\n\n'), images } : { role: 'user', content: parts.join('\n\n') };
+    const images = sent.map((x) => x.image);
+    return images.length ? { role: 'user', content: parts.join('\n\n'), images } : { role: 'user', content: parts.join('\n\n') };
   });
 }

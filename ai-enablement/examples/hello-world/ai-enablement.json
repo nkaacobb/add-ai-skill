@@ -1,0 +1,30 @@
+{
+  "$comment": "AI Enablement manifest: what the skill installed in this app and what the app owns. Written at the end of every run of the skill; committed with the app; never secrets. Format: references/upgrading.md, 'The manifest'.",
+  "skill": "ai-enablement",
+  "skillVersion": "2.0.0",
+  "runtimeVersion": "1.6.0",
+  "updated": "2026-10-02",
+  "appId": "hello-world",
+  "framework": {
+    "runtime": "../../assets/ai-agent",
+    "relay": { "file": "../../assets/relay/relay.mjs", "version": "1.4.0", "mode": "local", "config": "none (development)" }
+  },
+  "capabilities": {
+    "index": "ai/index.json",
+    "agents": ["writer", "proofreader"],
+    "skills": ["proofreading", "summarize"],
+    "toolsets": ["document", "editor", "file"],
+    "tools": 8,
+    "permissions": "ask: toolset:file (app) · proofreader denies insert_text"
+  },
+  "integration": ["ai-agent-setup.js", "content.js"],
+  "toolsConfig": "ai/ai-tools.json",
+  "memoryFile": "ai/ai-memory.json",
+  "features": ["tools", "memory", "vision:screen", "attachments", "capabilities", "agents", "skills", "workspace", "codeActions", "replyActions"],
+  "declined": [],
+  "pages": [
+    { "id": "editor", "content": "the document text with file name and stats", "tools": "all three toolsets" }
+  ],
+  "customizations": ["status-bar sync flag (app.css)"],
+  "notes": "The reference integration. The runtime and relay live in the skill itself (../../assets), not copied into the app, so detect.mjs reports 'no runtime copy' here."
+}

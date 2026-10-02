@@ -1,7 +1,7 @@
 // Runtime behaviour that only a real browser can show: keyboard isolation from host shortcuts, native modal
 // dialogs, the push-layout warning, theme overrides, resume, form controls, the relay probe, the context size, the
-// tool loop, tool rows (a cut-off call rolled down and copied), memory, and screenshots (an app hook with a WebGL
-// canvas, and the browser's own screen capture).
+// tool loop, tool rows (a cut-off call rolled down and copied), memory, screenshots (an app hook with a WebGL
+// canvas, and the browser's own screen capture), and attachments (the + menu, drag and drop, paste, a browser-made PDF).
 // Runs headless Edge/Chrome/Chromium over the DevTools protocol (scripts/lib/cdp.mjs, Node 22+). Skipped when no
 // browser is installed; set AIA_BROWSER to a browser executable to choose one, or AIA_SKIP_BROWSER=1 to skip.
 
@@ -539,6 +539,7 @@ test('memory: the agent saves what it is asked to remember, knows it in the next
         memoryFile: { memories: [{ id: 'm1', text: 'The user prefers metric units.' }] },
         memorySave: (file) => { saved.push(file.memories.map((m) => m.id).join(',')); },
         screenshots: false,
+        attachments: false,
       });
       agent.on('memory', (e) => events.push(e.change.type));
       await agent.ask('Remember the shortcut for the easter egg: Ctrl+Shift+E.');
@@ -593,7 +594,7 @@ test('memory: the agent saves what it is asked to remember, knows it in the next
     assert.deepEqual(tab.pending, tab.before, 'edits are a draft until Save');
     assert.deepEqual(tab.after, [['m1', 'The user prefers imperial units.', 'app'], ['m3', 'Likes the dark colour map.', 'user']]);
     assert.deepEqual([tab.file.version, tab.file.memories.map((m) => m.id)], [1, ['m1', 'm3']]);
-    assert.deepEqual(tab.tabs, ['Model', 'Agent', 'Memory', 'Context'], 'screenshots: false removes the Vision tab; no app tools, no Tools tab');
+    assert.deepEqual(tab.tabs, ['Model', 'Agent', 'Memory', 'Context'], 'screenshots: false and attachments: false remove the Vision tab; no app tools, no Tools tab');
 
     // Saving switched off: the tools are gone and the model is told it cannot save.
     await page.evaluate(async () => { agent.settings.save({ memoryWrite: false }); await agent.ask('Remember that I like tea.'); });
@@ -610,7 +611,7 @@ test('memory: the agent saves what it is asked to remember, knows it in the next
   try {
     await fresh();
     const r = await page.evaluate(async (url) => {
-      window.agent = M.createAiAgent({ appId: 'mem-off', launcher: false, devWarnings: false, memory: false, screenshots: false, defaults: { provider: 'custom', profiles: { custom: { baseUrl: url, model: 'm' } } } });
+      window.agent = M.createAiAgent({ appId: 'mem-off', launcher: false, devWarnings: false, memory: false, screenshots: false, attachments: false, defaults: { provider: 'custom', profiles: { custom: { baseUrl: url, model: 'm' } } } });
       await agent.ask('hi');
       agent.openSettings('model');
       return { memory: agent.memory, tabs: [...document.querySelectorAll('.aia-modal .aia-tab')].filter((t) => !t.hidden).map((t) => t.textContent), camera: document.querySelector('.aia-shot-btn').hidden };
@@ -685,7 +686,7 @@ test('vision: the camera button attaches the app\'s own picture (a WebGL canvas)
     const urls = imagesOf(sent);
     assert.equal(urls.length, 1);
     assert.match(sent.messages.at(-1).content[0].text, /A screenshot of the user's screen[\s\S]*What colour is the view\?$/);
-    assert.match(sent.messages[0].content, /Screenshots: an image attached to a user message/);
+    assert.match(sent.messages[0].content, /Images: an image attached to a user message is either a screenshot/);
     const img = await readImage(urls[0], [[0.5, 0.5], [0.05, 0.9]]);
     assert.deepEqual([img.w, img.h], [320, 180], 'scaled to screenshotMaxEdge');
     assert.ok(img.px.every((p) => near(p, [0, 128, 255])), `${kind}: the picture is the view, not a blank buffer: ${JSON.stringify(img.px)}`);
@@ -880,4 +881,243 @@ test('built-in tools keep working with the app\'s tools switched off, and as tex
   } finally {
     await upstream.close();
   }
+});
+
+/* ----------------------------------------------------------------------------------- attachments (+) */
+
+/** Put files into one of the drawer's file inputs, as the browser's file picker does. files: [{ b64, name, type }] */
+const pick = (selector, files) => page.evaluate((sel, list) => {
+  const dt = new DataTransfer();
+  for (const f of list) dt.items.add(new File([Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0))], f.name, { type: f.type }));
+  const input = document.querySelector(sel);
+  input.files = dt.files;
+  input.dispatchEvent(new Event('change'));
+}, selector, files);
+const b64 = (bytes) => Buffer.from(bytes).toString('base64');
+/** A PNG of one colour, made in the page. */
+const pngB64 = (w, h, color) => page.evaluate(async (W, H, c) => {
+  const cv = document.createElement('canvas');
+  cv.width = W;
+  cv.height = H;
+  const g = cv.getContext('2d');
+  g.fillStyle = c;
+  g.fillRect(0, 0, W, H);
+  const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let s = '';
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s);
+}, w, h, color);
+
+test('attachments: the + menu attaches an image (sent like a screenshot) and a Word file (sent as its text)', { skip, timeout: 90000 }, async () => {
+  const { startFakeUpstream } = await import('./fixtures/fake-upstream.mjs');
+  const F = await import('./fixtures/documents.mjs');
+  const upstream = await startFakeUpstream({ cors: true, reply: ['The report says sales rose; the picture is red.'] });
+  try {
+    await fresh();
+    await page.evaluate((url) => {
+      window.attached = [];
+      window.agent = M.createAiAgent({
+        appId: 'attach-e2e', launcher: false, devWarnings: false, memory: false, screenshots: false, screenshotMaxEdge: 400,
+        defaults: { provider: 'custom', profiles: { custom: { baseUrl: url, model: 'fake-vlm' } } },
+      });
+      agent.on('attach', (e) => attached.push(e));
+      agent.open();
+    }, upstream.url);
+    await sleep(350);
+
+    // The menu: opens from +, the keyboard moves through it, Escape and a click elsewhere close it.
+    assert.deepEqual(await page.evaluate(() => [document.querySelector('.aia-plus').hidden, document.querySelector('.aia-attach-menu').hidden]), [false, true]);
+    await page.click('.aia-plus-btn');
+    const menu = await page.evaluate(() => ({
+      open: !document.querySelector('.aia-attach-menu').hidden,
+      expanded: document.querySelector('.aia-plus-btn').getAttribute('aria-expanded'),
+      items: [...document.querySelectorAll('.aia-menu-item b')].map((b) => b.textContent),
+      focus: document.activeElement.dataset.act,
+      leftOfField: document.querySelector('.aia-plus-btn').getBoundingClientRect().right <= document.querySelector('.aia-composer textarea').getBoundingClientRect().left,
+    }));
+    assert.deepEqual(menu, { open: true, expanded: 'true', items: ['Attach an image', 'Upload a file'], focus: 'attach-image', leftOfField: true });
+    await page.press('ArrowDown');
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.act), 'attach-file');
+    await page.press('Escape');
+    assert.deepEqual(await page.evaluate(() => [document.querySelector('.aia-attach-menu').hidden, document.activeElement.classList.contains('aia-plus-btn'), agent.isOpen()]), [true, true, true], 'Escape closes the menu, not the drawer');
+    await page.click('.aia-plus-btn');
+    await page.click('.aia-messages');
+    assert.equal(await page.evaluate(() => document.querySelector('.aia-attach-menu').hidden), true, 'a click elsewhere closes it');
+
+    // Pick an image and a Word document, as the browser's file pickers would.
+    await pick('[data-el="imageInput"]', [{ b64: await pngB64(800, 400, 'rgb(220,0,0)'), name: 'red.png', type: 'image/png' }]);
+    await pick('[data-el="fileInput"]', [{ b64: b64(await F.docx()), name: 'report.docx', type: '' }]);
+    await page.waitFor(() => document.querySelectorAll('.aia-attach img').length === 1 && document.querySelector('.aia-attach .aia-file:not(.aia-file-reading)'), { timeoutMs: 10000 });
+    const composer = await page.evaluate(() => ({
+      chip: document.querySelector('.aia-attach .aia-file').textContent,
+      placeholder: document.querySelector('.aia-composer textarea').placeholder,
+      events: attached.map((e) => [e.kind, e.name]),
+    }));
+    assert.match(composer.chip, /^report\.docxWord document · ≈ \d+ tokens$/);
+    assert.equal(composer.placeholder, 'Ask about the attachments…');
+    assert.deepEqual(composer.events.sort(), [['docx', 'report.docx'], ['image', 'red.png']]);
+
+    await page.evaluate(() => { document.querySelector('.aia-composer textarea').value = 'What do these say?'; document.querySelector('.aia-composer').requestSubmit(); });
+    await page.waitFor(() => !!document.querySelector('.aia-msg.aia-assistant:not(.aia-welcome) .aia-msg-foot:not([hidden])'), { timeoutMs: 15000 });
+    const sent = upstream.lastChat().body;
+    const parts = sent.messages.at(-1).content;
+    assert.match(parts[0].text, /^<attached_file name="report\.docx" type="Word document" chars="\d+" hash="[0-9a-f]{7}">\n# Quarterly report\n# Summary\n[\s\S]*<\/attached_file>\n\n\[Attached to this message: the image file "red\.png"\.\]\n\nWhat do these say\?$/);
+    assert.match(sent.messages[0].content, /Attached files: files the user attached reach you inside <attached_file/);
+    assert.match(sent.messages[0].content, /Images: an image attached to a user message is an image file the user attached/, 'no screenshots in this app: the image paragraph says so');
+    const img = await readImage(imagesOf(sent)[0], [[0.5, 0.5]]);
+    assert.deepEqual([img.w, img.h], [400, 200], 'scaled like a screenshot (screenshotMaxEdge)');
+    assert.ok(near(img.px[0], [220, 0, 0]), JSON.stringify(img.px));
+
+    // The question shows both; the file chip opens the text the agent received.
+    await page.click('.aia-msg.aia-user .aia-files .aia-file');
+    const viewer = await page.evaluate(() => ({
+      open: !document.querySelector('.aia-file-view').hidden,
+      name: document.querySelector('[data-el="fileViewName"]').textContent,
+      text: document.querySelector('[data-el="fileViewText"]').textContent.split('\n')[0],
+    }));
+    assert.deepEqual(viewer, { open: true, name: 'report.docx', text: '# Quarterly report' });
+    await page.press('Escape');
+    assert.deepEqual(await page.evaluate(() => [document.querySelector('.aia-file-view').hidden, agent.isOpen(), document.querySelectorAll('.aia-msg.aia-user .aia-shots img').length]), [true, true, 1]);
+
+    // Saved chats keep the file's text and the image's thumbnail, never the image.
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('attach-e2e.ai.chats'))[0].messages[0]);
+    assert.match(saved.files[0].text, /^# Quarterly report/);
+    assert.deepEqual(saved.shots.map((s) => [s.name, s.kind, s.thumb.startsWith('data:image/jpeg'), 'data' in s]), [['red.png', 'image', true, false]]);
+
+    // The next question: the file stays in the conversation, and the image is still among the newest.
+    await page.evaluate(() => agent.ask('And the totals?'));
+    const next = upstream.lastChat().body;
+    assert.match(next.messages[1].content[0].text, /<attached_file name="report\.docx"/);
+    assert.equal(next.messages.at(-1).content, 'And the totals?');
+    assert.equal(imagesOf(next).length, 1);
+
+    // Reopened from Saved chats: the chip is back and still shows the text.
+    await page.evaluate(() => { const id = JSON.parse(localStorage.getItem('attach-e2e.ai.chats'))[0].id; agent.newChat(); document.querySelector(`[data-chat-open="${id}"]`).click(); });
+    await page.click('.aia-msg.aia-user .aia-files .aia-file');
+    assert.match(await page.evaluate(() => document.querySelector('[data-el="fileViewText"]').textContent), /Kept words/);
+    assert.deepEqual(page.errors(), []);
+  } finally {
+    await upstream.close();
+  }
+});
+
+test('attachments: drag and drop, paste, a text-only model, agent.attach() + ask(), Send while reading, attachments: false', { skip, timeout: 90000 }, async () => {
+  const { startFakeUpstream } = await import('./fixtures/fake-upstream.mjs');
+  const upstream = await startFakeUpstream({ cors: true, reply: ['Ok.'] });
+  try {
+    await fresh();
+    const red = await pngB64(64, 64, 'rgb(220,0,0)');
+    await page.evaluate((url) => {
+      window.hostDrops = 0;
+      window.addEventListener('drop', () => { hostDrops++; });
+      window.agent = M.createAiAgent({
+        appId: 'attach-more', launcher: false, devWarnings: false, memory: false,
+        defaults: { provider: 'custom', vision: false, profiles: { custom: { baseUrl: url, model: 'text-only' } } },
+      });
+      agent.open();
+    }, upstream.url);
+    await sleep(300);
+
+    // A text-only model: no images (the menu says why), but an SVG is still read as text.
+    await page.click('.aia-plus-btn');
+    assert.deepEqual(await page.evaluate(() => [document.querySelector('[data-act="attach-image"]').disabled, document.querySelector('[data-el="menuImageNote"]').textContent]), [true, 'This model is set as text-only (Settings > Vision).']);
+    await page.press('Escape');
+    const blind = await page.evaluate(async (png) => {
+      const photo = new File([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], 'photo.png', { type: 'image/png' });
+      const svg = new File(['<svg xmlns="http://www.w3.org/2000/svg"><text>Logo</text></svg>'], 'logo.svg', { type: 'image/svg+xml' });
+      const r = await agent.attach([photo, svg, new File(['PK'], 'bundle.zip')]);
+      return { r: r.map((x) => x && [x.kind, x.name]), errors: [...document.querySelectorAll('.aia-drawer .aia-error')].map((e) => e.textContent.trim()) };
+    }, red);
+    assert.deepEqual(blind.r, [null, ['text', 'logo.svg'], null]);
+    assert.match(blind.errors[0], /"photo\.png" is an image, and this model is set as text-only/);
+    assert.match(blind.errors[1], /"bundle\.zip" is an archive/);
+
+    // Drag a CSV over the drawer and drop it: the overlay shows, and the host page's own drop handler is not reached.
+    const drop = await page.evaluate(() => {
+      const dt = new DataTransfer();
+      dt.items.add(new File(['item,qty\nbolts,40\n'], 'stock.csv', { type: 'text/csv' }));
+      const target = document.querySelector('.aia-messages');
+      target.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true, cancelable: true }));
+      const shown = !document.querySelector('.aia-drop').hidden;
+      target.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+      return { shown, hidden: document.querySelector('.aia-drop').hidden };
+    });
+    assert.deepEqual(drop, { shown: true, hidden: true });
+    await page.waitFor(() => [...document.querySelectorAll('.aia-attach .aia-file-name')].some((n) => n.textContent === 'stock.csv'), { timeoutMs: 5000 });
+    assert.equal(await page.evaluate(() => hostDrops), 0);
+
+    // Paste: a file alone is attached; a file that comes with text (copied from Word or Excel) leaves the text paste alone.
+    const pasted = await page.evaluate(() => {
+      const ta = document.querySelector('.aia-composer textarea');
+      const paste = (withText) => {
+        const dt = new DataTransfer();
+        dt.items.add(new File(['pasted notes'], 'notes.txt', { type: 'text/plain' }));
+        if (withText) dt.setData('text/plain', 'cells as text');
+        const e = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+        ta.dispatchEvent(e);
+        return e.defaultPrevented;
+      };
+      return [paste(true), paste(false)];
+    });
+    assert.deepEqual(pasted, [false, true]);
+    await page.waitFor(() => document.querySelectorAll('.aia-attach .aia-file:not(.aia-file-reading)').length === 3, { timeoutMs: 5000 });
+
+    // ask() takes what waits in the composer along, like Send.
+    await page.evaluate(() => agent.ask('Summarize them.'));
+    const first = upstream.lastChat().body.messages.at(-1).content;
+    assert.deepEqual([...first.matchAll(/<attached_file name="([^"]+)"/g)].map((m) => m[1]), ['logo.svg', 'stock.csv', 'notes.txt']);
+    assert.match(first, /Summarize them\.$/);
+    assert.equal(await page.evaluate(() => document.querySelector('.aia-attach').hidden), true);
+
+    // Send pressed while a file is still being read: the question goes once it is read.
+    await page.evaluate(() => {
+      agent.attach(new File(['x'.repeat(200000)], 'big.log'));
+      document.querySelector('.aia-composer textarea').value = 'And this log?';
+      document.querySelector('.aia-composer').requestSubmit();
+    });
+    for (const end = Date.now() + 10000; upstream.chats().length < 2 && Date.now() < end;) await sleep(50);
+    assert.match(upstream.lastChat().body.messages.at(-1).content, /<attached_file name="big\.log" type="Log" chars="200000" truncated="true"[\s\S]*And this log\?$/);
+
+    // attachments: false: no + button, no drop target, attach() does nothing, no Max file content field.
+    await fresh();
+    const off = await page.evaluate(async () => {
+      window.agent = M.createAiAgent({ appId: 'attach-off', launcher: false, devWarnings: false, attachments: false });
+      agent.open();
+      const dt = new DataTransfer();
+      dt.items.add(new File(['a'], 'a.txt'));
+      document.querySelector('.aia-messages').dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true, cancelable: true }));
+      agent.openSettings('agent');
+      const field = document.querySelector('.aia-modal [data-f="maxFileChars"]').closest('.aia-section').hidden;
+      document.querySelector('.aia-modal [data-act="close"]').click();
+      return { plus: document.querySelector('.aia-plus').hidden, overlay: document.querySelector('.aia-drop').hidden, attached: await agent.attach([new File(['a'], 'a.txt')]), field };
+    });
+    assert.deepEqual(off, { plus: true, overlay: true, attached: [], field: true });
+    assert.deepEqual(page.errors(), []);
+  } finally {
+    await upstream.close();
+  }
+});
+
+test('attachments: a PDF printed by the browser itself (Skia: Type0 fonts, ToUnicode, Flate) reads back as its text', { skip, timeout: 60000 }, async () => {
+  await fresh();
+  await page.evaluate(() => {
+    document.body.innerHTML = `<main style="font: 16px Arial, sans-serif; padding: 20px">
+      <h1>Invoice 42</h1><p>Total due: 1,234.50 EUR — payable “within 30 days”.</p>
+      <table border="1"><tr><td>Bolts</td><td>40</td></tr><tr><td>Nuts</td><td>12</td></tr></table>
+      <p>Offices in Zürich and 東京.</p></main>`;
+  });
+  const { data } = await page.send('Page.printToPDF', { printBackground: false });
+  const r = await page.evaluate(async (pdf) => {
+    const { readFile } = await import('/assets/ai-agent/core/files.js');
+    const f = new File([Uint8Array.from(atob(pdf), (c) => c.charCodeAt(0))], 'invoice.pdf', { type: 'application/pdf' });
+    const rec = await readFile(f);
+    return { text: rec.text, label: rec.label, count: rec.count, note: rec.note || '' };
+  }, data);
+  assert.deepEqual([r.label, r.count, r.note], ['PDF', 1, '']);
+  const flat = r.text.replace(/\s+/g, ' ');
+  for (const want of ['Invoice 42', 'Total due: 1,234.50 EUR — payable “within 30 days”.', 'Bolts 40', 'Nuts 12', 'Offices in Zürich and 東京.']) {
+    assert.ok(flat.includes(want), `"${want}" in: ${flat}`);
+  }
+  assert.ok(flat.indexOf('Invoice 42') < flat.indexOf('Bolts') && flat.indexOf('Bolts') < flat.indexOf('Zürich'), 'reading order');
 });

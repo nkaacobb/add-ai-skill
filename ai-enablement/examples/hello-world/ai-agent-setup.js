@@ -9,16 +9,21 @@
 //   view     cursor, selection, save state, editor settings — sent, not hashed (page.view)
 // …plus one change signal: agent.contextChanged() whenever the document changes.
 //
-// Tools (ai-tools.js) let the agent act: find, insert, replace, change editor settings, rename, start over. Which
-// ones are on comes from ai-tools.json (the app's defaults) and from each user's Settings > Tools.
+// What the AI can do lives in the capability folder, ai/ (AI Enablement), named by ai/index.json:
+//   ai/tools/*.js         three toolsets over the editor's own functions (document, editor, file), reached through
+//                         `host` — the editor object passed below
+//   ai/skills/*/SKILL.md  proofreading and summarizing, in the Agent Skills format (the agent loads one when needed)
+//   ai/agents/*.md        the Writing agent (everything) and the Proofreader (document tools, the proofreading skill)
+//   ai/ai-tools.json      which tools start on · ai/ai-memory.json what the agent knows from the start
+// This module only mounts the agent and feeds it what is on screen.
 //
-// Memory and vision come with the runtime: ai-memory.json holds what the agent should know from the start (a keyboard
-// shortcut it could not see on screen); users add more by asking it to remember something. Screenshots use the
-// browser's screen capture here (an app that draws on a canvas passes a `screenshot` hook instead).
+// Memory, vision and attachments come with the runtime: screenshots use the browser's screen capture here (an app that
+// draws on a canvas passes a `screenshot` hook instead); the + button attaches images and files with no code here.
+// `workspace: true` lets the agent add tools to ai/ itself while the skill's dev server serves the app
+// (scripts/workspace.mjs); without that server it does nothing.
 
 import { createAiAgent, DEFAULT_SYSTEM_PROMPT, parseBlockValues, setControlValue } from '../../assets/ai-agent/ai-agent.js';
 import { editorContent, editorView, EDITOR_SETTINGS } from './content.js';
-import { editorTools } from './ai-tools.js';
 
 /** The model was asked for ```editor-settings; small models often answer ```json instead — accepted when every key
  *  is a known setting. Values are clamped to the real controls' ranges. */
@@ -37,23 +42,23 @@ export function mountAgent(app) {
     },
     // relayProbe: true,    // pick the relay automatically when it answers (see references/providers.md)
 
-    // What the agent can do, and which of it is turned on by default.
-    tools: editorTools(app),
-    toolsConfig: 'ai-tools.json',
-
-    // What the agent remembers between conversations: the app's starting notes; each user's own are added on top.
-    memoryFile: 'ai-memory.json',
+    // What the AI can do: tools, skills, agents, permissions, the tool defaults and the starting memories.
+    capabilities: 'ai/index.json',
+    host: app,             // the tools call the editor through this: run(args, { host })
+    workspace: true,       // development: the agent may add tools while scripts/workspace.mjs serves this app
 
     // What this application is. Goes into the system prompt on every request. Keep it short: titles and lists.
     app: {
       name: 'Hello World',
-      purpose: 'A minimal plain-text editor. It is also the reference implementation of the ai-agent-drawer pattern.',
+      purpose: 'A minimal plain-text editor. It is also the reference implementation of AI Enablement (the agent drawer).',
       capabilities: [
         'Type or paste text into one document',
         'Open a text file from disk (button or drag and drop) and save the document as a file',
         'Apply the agent\'s suggestions with the "Insert at cursor" and "Replace document" buttons on its code blocks',
         'Change the editor font size (11-24 px) and line wrapping, also from the agent\'s "Apply editor settings" button',
         'The agent can edit through its tools (find, insert, replace, editor settings…): the user confirms each change',
+        'Two agents to pick from at the top of the panel: the Writing agent and the Proofreader',
+        'The user can give the agent an image or a file (PDF, Word, Excel, text…) with a question: the + button beside the message field',
       ],
       limits: [
         'The agent only uses the tools that are turned on (Settings > Tools); changes need the user\'s confirmation',
@@ -70,17 +75,16 @@ export function mountAgent(app) {
       view: () => editorView(app.state()),         // volatile: moving the cursor does not make the page "changed"
     },
 
+    // The rules for every agent of this app; each agent (ai/agents/*.md) adds its own instructions after them.
     systemPrompt: `${DEFAULT_SYSTEM_PROMPT}
 
-You are the writing agent inside Hello World, a plain-text editor. Help the user write, edit, proofread, summarise and understand the document on screen.
+You work inside Hello World, a plain-text editor, on the document on screen.
 - When the user asks about "this", "the text" or "the document", they mean the document in the page snapshot.
 - If there is a selection in the view state and the question is about "this part", work on the selection.
-- When you propose a rewrite, put the complete new text in ONE fenced code block tagged \`text\`, so the user can apply it with "Replace document" or "Insert at cursor". Explain the changes briefly outside the block.
-- For proofreading, list each fix as: original → corrected, with a short reason.
 - To change the editor's font size (11-24) or line wrapping, answer with a fenced code block tagged \`editor-settings\` holding JSON, for example {"fontSize": 17, "wrap": false}. The user applies it with a button.`,
 
-    welcome: '**Hi!** I can read the document in the editor. Ask me to summarise it, proofread it, rewrite part of it, or continue it.\n\nThe flag above shows whether my copy of the page is current.',
-    suggestions: ['Summarize this document', 'Fix the spelling mistakes', 'Make the text bigger', 'What tools can you use?'],
+    // The agents bring their own welcome and suggestions (ai/agents/*.md); this one shows if none does.
+    welcome: '**Hi!** I can read the document in the editor. Ask me anything about it.',
 
     // Buttons on the agent's code blocks and replies, wired to this app's own abilities.
     codeActions: [

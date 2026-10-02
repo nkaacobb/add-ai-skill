@@ -1,0 +1,11 @@
+{
+  "$comment": "Hello World's capability index: what its AI can do. The runtime loads it (createAiAgent({ capabilities: 'ai/index.json' })); paths are relative to this file. Check it with: node <skill>/scripts/validate.mjs examples/hello-world",
+  "format": "ai-enablement/1",
+  "agents": ["agents/writer.md", "agents/proofreader.md"],
+  "skills": ["skills/proofreading", "skills/summarize"],
+  "tools": ["tools/document.js", "tools/editor.js", "tools/file.js"],
+  "toolsConfig": "ai-tools.json",
+  "memory": "ai-memory.json",
+  "permissions": { "ask": ["toolset:file"] },
+  "defaultAgent": "writer"
+}
