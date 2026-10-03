@@ -209,3 +209,7 @@ When an integration needed a workaround, fold the lesson back in here so the nex
 Apps that already have a copy of `ai-agent/` take an update by copying the folder over theirs (see the upgrade notes
 in `CHANGELOG.md`); integrations only use the options and methods, so the copy can be replaced wholesale. The app's
 capability folder is never replaced.
+
+## License
+
+[MIT](LICENSE) © 2026 Nate Cobb

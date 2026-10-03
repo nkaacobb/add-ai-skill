@@ -1,6 +1,7 @@
 ---
 name: ai-enablement
 description: Install, upgrade and extend a web application's AI layer. Builds a screen-aware AI agent into the app (a chat drawer that sees the current page with hash-synced context, acts through tools wrapping the app's own functions, remembers notes, looks at screenshots, takes attachments, works with any LLM - LM Studio, Ollama, OpenAI, Anthropic, Gemini, relays) and manages its capability folder - MCP-compatible tools and toolsets, Agent Skills, agents, permissions - plus a dev workspace where the in-app agent writes new tools. Use when the user asks to add or integrate an AI agent, assistant, chatbot or copilot panel into an app; to update or upgrade one (it detects what is there, upgrades framework files, keeps the app's own); to add a tool, toolset, skill or agent to an app's AI ("add a tool that lets the AI inspect the current track"); to let the app's AI create tools; or mentions ai-enablement, add-ai-skill or the agent drawer. Vanilla ES modules, no build step; HTML, PHP, React, Vue, Svelte, Angular, Next.js.
+license: MIT
 ---
 
 # AI Enablement

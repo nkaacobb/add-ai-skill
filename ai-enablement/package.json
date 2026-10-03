@@ -2,6 +2,7 @@
   "name": "ai-enablement",
   "version": "2.0.1",
   "private": true,
+  "license": "MIT",
   "description": "AI Enablement: install, upgrade and extend an application's AI layer — the screen-aware agent drawer runtime, tools and toolsets (MCP-compatible), Agent Skills, agents, permissions, relays, a dev workspace for in-app tool authoring, examples, tests and lifecycle tooling (an agent skill).",
   "type": "module",
   "scripts": {
