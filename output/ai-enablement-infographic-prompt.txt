@@ -1,0 +1,104 @@
+Use case: infographic-diagram
+Asset type: a polished, shareable technical explainer poster for the ai-enablement project.
+Primary request: Create ONE finished infographic explaining how a coding agent following the ai-enablement skill adds a screen-aware AI assistant to an EXISTING web application. The dominant section must explain how CUSTOM APPLICATION TOOLS are generated from the app's source, registered, controlled, and called. Distinguish the coding agent performing integration from the assistant that ends up inside the application.
+Format: large high-resolution portrait poster, approximately 2:3 aspect ratio, ideally 2048 by 3072 or larger. Crisp vector-style technical illustration rendered as a raster image. Beautiful clear editorial typography. White/off-white background, charcoal text, restrained teal and blue accents, violet for the custom tool area, amber only for confirmation. Thin purposeful arrows, generous margins, rounded panels and small meaningful line icons. Professional documentation infographic, not cartoon. All text large enough to read when zoomed. Do not add decorative filler, robots, brand logos, fake metrics, or extra copy.
+Composition: A title and illustrated browser cutaway at top; a compact six-step integration path next; the custom tool factory as the largest central panel; a runtime tool-call strip; an eight-tile assistant features section; a distinct optional development strip and lifecycle footer. Strong hierarchy; the tool factory occupies about one-third of the poster. Use the EXACT visible copy below, preserving all code identifiers. Do not label six grouped stages as the exact fifteen individual source steps. No duplicated stages or feature tiles.
+
+TOP:
+Title: "AI ENABLEMENT"
+Subtitle: "From existing web app to an assistant that understands and acts"
+Illustrate a browser containing an existing app editor and, visibly inside the same browser, a chat drawer on the right. Label the editor "Your existing web app" and the drawer "In-app AI assistant". A small coding-agent + skill-document icon outside the browser has the label "Coding agent follows SKILL.md". An arrow goes from that icon to the browser.
+Small caption: "App functions + screen context + custom tools"
+
+SIX GROUPED INTEGRATION STAGES, left-to-right arrows, two rows if necessary:
+Section heading: "HOW THE SKILL INTEGRATES IT"
+1 "Detect & survey"
+Detail: "Inspect stack, pages, state, controls and existing AI."
+Output tag: "Install / upgrade / validate"
+2 "Plan the integration"
+Detail: "Define context, prompt, tools, defaults and permissions."
+Output tag: "App-specific plan"
+3 "Install & mount"
+Detail: "Copy runtime unchanged; mount one drawer; fit layout and theme."
+Output tag: "Runtime + setup module"
+4 "Connect every page"
+Detail: "Build screen content from state; track selection and changes."
+Output tag: "Context hooks + sync flag"
+5 "Build capabilities"
+Detail: "Generate custom tools; add optional skills and agent roles."
+Output tag: "App-owned ai/ folder"
+6 "Verify & record"
+Detail: "Test tools and live behavior; validate capabilities."
+Output tag: "ai-enablement.json"
+
+LARGE CENTRAL CUSTOM TOOL FACTORY:
+Section heading: "THE CUSTOM TOOL FACTORY"
+Subheading: "The coding agent reads your app's code and writes wrappers around its existing actions."
+Five connected cards, with small source-code, contract, connector, registry, and check icons:
+A "Discover actions"
+Detail: "Trace buttons, services, APIs, store actions and real controls."
+B "Define contracts"
+Detail: "Name + description; typed inputs, real ranges; effect; page conditions."
+Small effect labels: "read / write / destructive / external / system"
+C "Write wrappers"
+Detail: "run(args, { host }) calls the app's existing function or real control."
+D "Register & control"
+Detail: "ai/tools/*.js + index.json; toolsets; ai-tools.json; ask / deny rules."
+E "Test & validate"
+Detail: "Mock host, check arguments and results, then verify in the app."
+Prominent principle line below the cards: "Tools reuse the app's business logic and the user's existing permissions."
+A clearly labeled worked example (actual Hello World editor tool, simplified):
+Heading: "Example: find-and-replace in an editor"
+Draw three connected little code capsules:
+"replace_text({ find, replace })" → "host.replaceText(find, replace, options)" → "Replacement count + updated document"
+Supporting copy: "Schema bounds the text inputs. effect: write. Changes are confirmed by default."
+A compact folder inset showing the build outputs:
+"ai/"
+"tools/  •  toolsets"
+"skills/  •  optional workflows"
+"agents/  •  optional roles"
+"index.json  •  registry + permissions"
+"ai-tools.json  •  tool defaults"
+"ai-memory.json  •  starting notes"
+Do not make the folder inset larger than the tool factory flow.
+
+RUNTIME TOOL-CALL STRIP:
+Heading: "WHEN THE IN-APP ASSISTANT ACTS"
+Flow: "User request" → "Model selects tool" → "Validate + permission check" → "Confirm if required" → "Run app function" → "Result + fresh screen context"
+Small closing-loop arrow from result back to model, clearly indicating the model can check the outcome.
+
+EIGHT ASSISTANT FEATURE TILES, 4 columns by 2 rows:
+Section heading: "WHAT THE ASSISTANT INCLUDES"
+1 "Screen awareness"
+"App + page + view context; content re-sent only when its hash changes; sync status."
+2 "Chat experience"
+"Right-side drawer, streaming Markdown, saved chats and settings."
+3 "Tool controls"
+"Per-tool on/off, confirmations, permissions and visible call logs."
+4 "Memory"
+"Starting notes; remember / forget; editable Memory settings."
+5 "Vision"
+"User-sent screenshots; capture hook for canvas / WebGL."
+6 "Attachments"
+"Images, PDF, Word, Excel, PowerPoint, text and code."
+7 "Skills & agent roles"
+"Optional reusable workflows and roles that compose existing tools."
+8 "Reply actions"
+"Optional buttons apply code blocks or replies through real app controls."
+
+MODEL / TRANSPORT BAR:
+"MODEL CHOICE"
+"LM Studio (default) • Ollama • OpenAI • Anthropic • Gemini • DeepSeek • OpenRouter • compatible endpoints"
+"Direct connection or optional PHP / Node relay"
+
+DISTINCT OPTIONAL DEVELOPMENT STRIP:
+Heading: "OPTIONAL: THE IN-APP ASSISTANT CAN AUTHOR NEW TOOLS"
+Badge: "DEVELOPMENT ONLY"
+Flow: "Request missing tool" → "Read host + app source" → "Draft wrapper + registry update" → "Review and confirm each file / diff" → "Reload, validate and commit"
+Caption: "Requires the local workspace server and create-tool skill. Workspace tooling never ships to production."
+Ensure this is clearly separate from the initial integration tool factory.
+
+FOOTER:
+"Repeatable lifecycle: install → upgrade → validate → add → reconcile"
+"Source: ai-enablement/SKILL.md and project references"
+Constraints: No unsupported features such as voice, autonomous production code editing, cloud memory, external MCP hosting, or model training. MCP-compatible schemas may underlie these tools, but do not depict an external MCP server. The browser drawer is integrated into the app. Tools are generated by the coding agent using the skill; the model later chooses and calls them. All arrows must show an unambiguous reading order. Keep text exact and legible.
