@@ -7,8 +7,11 @@
 <title>Hello World — text editor with an AI agent</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#9998;</text></svg>">
 <!-- What an app adds for the agent: this stylesheet, and one integration module (ai-agent-setup.js, loaded by app.js). -->
-<link rel="stylesheet" href="../../assets/ai-agent/ai-agent.css">
-<link rel="stylesheet" href="app.css">
+<!-- Cache busting: servers like Apache/XAMPP send no Cache-Control, so the browser keeps files as long as it guesses.
+     The stylesheets get a fresh ?v= on every load. -->
+<script>
+  for (const href of ['../../assets/ai-agent/ai-agent.css', 'app.css']) document.write(`<link rel="stylesheet" href="${href}?v=${Date.now()}">`);
+</script>
 </head>
 <body>
 
@@ -91,6 +94,30 @@
   // Modules cannot load from file:// — say so instead of showing a dead page.
   if (location.protocol === 'file:') document.getElementById('protocolWarning').hidden = false;
 </script>
-<script type="module" src="app.js"></script>
+<script type="module">
+  // Cache busting for the scripts. A ?v= on app.js would not reach the files it imports (content.js, ai-agent-setup.js,
+  // the runtime's modules), and one stale runtime file next to new ones stops the agent from loading. So first
+  // revalidate every module the page imports — from app.js and the tool modules in ai/index.json — then start the app.
+  // Unchanged files cost a 304.
+  const IMPORT = /\b(?:from|import)\s*(?:\(\s*)?['"](\.{0,2}\/[^'"]*)['"]/g;   // from './x.js' · import './x.js' · import('./x.js')
+  const seen = new Set();
+  async function refresh(url) {
+    if (seen.has(url)) return;
+    seen.add(url);
+    try {
+      const res = await fetch(url, { cache: 'no-cache' });
+      if (!res.ok) return;
+      const text = await res.text();
+      const inComment = (m) => /\/\/|^\s*\/?\*/.test(text.slice(text.lastIndexOf('\n', m.index) + 1, m.index));
+      const specs = [...text.matchAll(IMPORT)].filter((m) => !inComment(m)).map((m) => m[1]).filter((s) => /\.m?js$/.test(s));
+      await Promise.all(specs.map((s) => refresh(new URL(s, url).href)));
+    } catch { /* that file loads as it would have */ }
+  }
+  const index = new URL('ai/index.json', location.href).href;
+  let tools = [];
+  try { tools = ((await (await fetch(index, { cache: 'no-store' })).json()).tools || []).map((t) => new URL(t, index).href); } catch { /* no tool modules */ }
+  await Promise.all([new URL('app.js', location.href).href, ...tools].map(refresh));
+  await import('./app.js');
+</script>
 </body>
 </html>
