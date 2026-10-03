@@ -1,5 +1,9 @@
 # AI Enablement — an application's AI layer, as a reusable skill
 
+<p align="center">
+  <img src="skill-overview.png" alt="AI Enablement skill overview" width="1000">
+</p>
+
 This repository packages an application AI framework so that Claude Code, Codex and GitHub Copilot can install it in
 any web app, upgrade it safely, and extend it on request:
 
