@@ -18,7 +18,11 @@
 //   - which features the installed runtime has and which of them the integration uses (tools, memory, vision,
 //     attachments, capabilities, agents, skills, workspace), so an upgrade adds only what is missing;
 //   - app code that looks like a workaround a newer runtime covers, and things to check for the new features (a
-//     canvas/WebGL view that wants a screenshot hook, a Permissions-Policy or CSP header) — hints, not certainties.
+//     canvas/WebGL view that wants a screenshot hook, a Permissions-Policy or CSP header) — hints, not certainties;
+//   - the layout guards of each runtime copy's ai-agent.css (runtime 1.6.1+; scripts/guards.mjs applies them):
+//     the settings dialog's chrome pinned (pinnedChrome) and the host page's element CSS kept out (hostIsolation) —
+//     missing guards are fixed in every run of the skill — and, for information, the host's own global element rules
+//     (label, input, select, textarea, button, p, h1-h6, body text-align) in its CSS files and inline <style> blocks.
 // Then it says what to do: install (nothing yet), upgrade (older version), or validate and add (current).
 // Exit code: 0 always (it only reports).
 
@@ -26,6 +30,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { layoutGuards, hostElementRules, inlineStyles, layoutWorkarounds } from './lib/css-guards.mjs';
 
 const SKILL = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKIP_DIRS = new Set(['node_modules', '.git', '.hg', '.svn', 'dist', 'build', 'out', '.next', '.nuxt', '.svelte-kit', '.output', 'coverage', '.verify', '.cache', '.turbo', '.vercel', 'bower_components']);
@@ -34,6 +39,9 @@ const isComposerVendor = (dir, name) => name === 'vendor' && fs.existsSync(path.
 const CODE_EXT = new Set(['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.vue', '.svelte', '.php', '.html', '.htm', '.astro']);
 const MAX_FILES = 20000;
 const MAX_BYTES = 2 * 1024 * 1024;
+const MAX_HOST_RULES = 60;
+const STYLE_EXT = new Set(['.html', '.htm', '.php', '.vue', '.astro', '.svelte']);
+const isTestFile = (rel) => /(^|\/)(tests?|__tests__|spec|e2e)\/|\.(test|spec)\.[a-z]+$/i.test(rel);
 
 export const normalizedHash = (text) => crypto.createHash('sha256').update(String(text).replace(/^﻿/, '').replace(/\r\n?/g, '\n'), 'utf8').digest('hex');
 const cmpVersion = (a, b) => String(a).localeCompare(String(b), 'en', { numeric: true });
@@ -244,6 +252,7 @@ export function detect(appRoot, skill = skillInfo()) {
     }
   }
   const inRuntime = (f) => runtimeDirs.some((d) => f.startsWith(d + path.sep));
+  const hostRules = [];
 
   for (const f of files) {
     if (inRuntime(f)) continue;
@@ -271,18 +280,35 @@ export function detect(appRoot, skill = skillInfo()) {
     if (!CODE_EXT.has(path.extname(f).toLowerCase())) continue;
     const t = read(f);
     if (!t) continue;
+    if (STYLE_EXT.has(path.extname(f).toLowerCase()) && /<style/i.test(t) && !isTestFile(rel(f))) {
+      for (const st of inlineStyles(t, f)) hostRules.push(...hostElementRules(st.css, `${rel(f)} <style>`, st.lineOffset));
+    }
     // A call in code, not one mentioned in a comment (tool modules and docs often name createAiAgent).
     const code = t.split('\n').filter((l) => !/^\s*(\/\/|\/?\*)/.test(l)).join('\n');
     if (/createAiAgent\s*\(/.test(code) && !/export function createAiAgent/.test(t)) integrations.push({ ...integrationInfo(f, code), file: rel(f) });
     if (/createAiAgent|contextChanged|aia-|ai-agent/.test(t)) hints.push(...workaroundHints(rel(f), t));
-    if (checks.length < 12 && !/(^|\/)(tests?|__tests__|spec|e2e)\/|\.(test|spec)\.[a-z]+$/i.test(rel(f))) checks.push(...featureHints(rel(f), t));
+    if (checks.length < 12 && !isTestFile(rel(f))) checks.push(...featureHints(rel(f), t));
   }
   for (const f of files) {
     if (path.extname(f).toLowerCase() === '.css' && !inRuntime(f)) {
       const t = read(f);
-      if (/\.aia-/.test(t)) hints.push(...workaroundHints(rel(f), t));
+      if (/\.aia-/.test(t)) {
+        hints.push(...workaroundHints(rel(f), t));
+        hints.push(...layoutWorkarounds(t, rel(f)).map((w) => ({ file: `${w.file}:${w.line}`, hint: w.hint })));
+      }
+      if (!isTestFile(rel(f))) hostRules.push(...hostElementRules(t, rel(f)));
     }
   }
+
+  // The layout guards of each runtime copy's stylesheet. A copy unchanged since its release is replaced to get them
+  // (references/upgrading.md, U4); an edited one gets them in place (scripts/guards.mjs --apply).
+  const guards = runtimes.map((rt) => {
+    const cssFile = path.join(root, ...rt.dir.split('/'), 'ai-agent.css');
+    if (!fs.existsSync(cssFile)) return null;
+    const g = layoutGuards(read(cssFile));
+    const unchanged = rt.known && !rt.modified.length && !rt.missing.length;
+    return { dir: rt.dir, css: rel(cssFile), version: rt.version, pinnedChrome: g.pinnedChrome, hostIsolation: g.hostIsolation, missing: g.missing, markers: g.markers, details: g.details, fix: g.missing.length ? (unchanged ? 'replace' : 'patch') : null };
+  }).filter(Boolean);
 
   const installed = runtimes.map((r) => r.version).sort(cmpVersion);
   const oldest = installed[0] || null;
@@ -335,6 +361,8 @@ export function detect(appRoot, skill = skillInfo()) {
     // Only what is still open: no canvas hint once the integration has a screenshot hook.
     checks: checks.filter((c) => !(hasScreenshotHook && /`screenshot` hook/.test(c.hint))).slice(0, 8),
     features: { ...features, record: records.length > 0 },
+    layoutGuards: guards,
+    hostRules: hostRules.slice(0, MAX_HOST_RULES),
   };
 }
 
@@ -399,6 +427,21 @@ function report(r) {
     const has = f.inRuntime === null ? `runtime copy not found (needs ${ft.since}+)` : f.inRuntime ? 'in the runtime' : `NOT in the runtime (arrives with ${ft.since})`;
     say(`  ${ft.id.padEnd(12)} ${has} · ${featureUse(ft, f)}  (${ft.doc})`);
   }
+  if (r.layoutGuards.length) {
+    say('');
+    say('Layout guards  (ai-agent.css, runtime 1.6.1+: the settings dialog keeps its tabs and ignores host element CSS)');
+    for (const g of r.layoutGuards) {
+      const fix = g.fix === 'replace' ? `FIX IN THIS RUN: replace the runtime (unchanged ${g.version} copy; references/upgrading.md, U4)`
+        : g.fix === 'patch' ? `FIX IN THIS RUN: node <skill>/scripts/guards.mjs <app-root> --apply (edited copy: adds ${g.missing.join(' + ')} in place)` : 'in place';
+      say(`  ${g.css}  pinned chrome: ${g.pinnedChrome ? 'yes' : 'MISSING'} · host isolation: ${g.hostIsolation ? 'yes' : 'MISSING'} — ${fix}`);
+    }
+  }
+  if (r.hostRules.length) {
+    say('');
+    say('Host element rules the agent\'s UI must withstand (information: what verify.mjs\'s settings check is up against):');
+    for (const h of r.hostRules.slice(0, 12)) say(`  · ${h.file}:${h.line}  ${h.selector} { ${h.props.join(', ')} }${h.media ? `  (${h.media})` : ''}`);
+    if (r.hostRules.length > 12) say(`  … ${r.hostRules.length - 12} more (--json)`);
+  }
   if (r.hints.length) {
     say('');
     say('Check (possible workarounds a newer runtime covers):');
@@ -423,6 +466,11 @@ function report(r) {
     say('   Find where the runtime comes from before changing anything. Do NOT build a second agent.');
   }
   if (r.framework.legacyRecord && !r.framework.manifest) say('   The record is the 1.x ai-agent.integration.json: write ai-enablement.json in its place.');
+  const unguarded = r.layoutGuards.filter((g) => g.missing.length);
+  if (unguarded.length) {
+    say(`   Layout guards missing in ${unguarded.map((g) => g.css).join(', ')}: fix them in this run, whatever the task (references/upgrading.md,`);
+    say('   "Layout guards"), and tell the user in one line.');
+  }
   return out.join('\n');
 }
 

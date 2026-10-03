@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hostile host — the agent under global element CSS</title>
+<!-- A host page whose own stylesheet styles bare label, input, select, button, p, h2… (hostile.css). The agent's
+     drawer and settings dialog must look the same as on a page without it. Serve the skill folder and run
+       node scripts/verify.mjs http://127.0.0.1:8787/tests/fixtures/hostile-host/ --no-llm
+       node scripts/verify.mjs "http://127.0.0.1:8787/tests/fixtures/hostile-host/?rules=off" --no-llm   (the control) -->
+<link rel="stylesheet" href="../../../assets/ai-agent/ai-agent.css">
+<script>
+  // The host's stylesheet loads after the runtime's (the worst case: ties go to the host). ?rules=off leaves it out.
+  if (!/[?&]rules=off\b/.test(location.search)) {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'hostile.css';
+    document.head.append(link);
+  }
+</script>
+<style>
+  /* The host's own layout (kept simple so it fits beside the drawer). */
+  body { margin: 0; font-family: system-ui, sans-serif; }
+  #app { min-height: 100vh; }
+  #app > header { position: relative; }
+  #app main { padding: 0 24px 40px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Field lab</h1>
+    <button type="button" id="ask">Ask AI</button>
+  </header>
+  <main>
+    <section>
+      <h2>Coil</h2>
+      <p>A teaching lab for electromagnetic fields. The host page styles bare elements globally.</p>
+      <label>Turns <input type="number" id="turns" value="120" min="1" max="500"></label>
+      <label>Current (A) <input type="number" id="current" value="2.5" step="0.1"></label>
+      <label><input type="checkbox" id="showField" checked> Show field lines</label>
+      <label>Material <select id="material"><option>Air</option><option>Iron</option></select></label>
+    </section>
+  </main>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

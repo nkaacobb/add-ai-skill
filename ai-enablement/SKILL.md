@@ -32,9 +32,10 @@ Everything lives in this skill folder (the folder that contains this `SKILL.md`)
 | `scripts/detect.mjs` | **Run first**: what is in the app — runtime, relay, integration, capability folders, manifest (or the 1.x record), dev-time folders, features — and what to do. Read-only. |
 | `scripts/validate.mjs` | Loads the capability folder the way the runtime does; errors and warnings. Run after every change. |
 | `scripts/scaffold.mjs` | Creates a tool, toolset, skill or agent from the templates and registers it (never overwrites). |
-| `scripts/verify.mjs` | Headless Edge/Chrome check of the running app: console, hotkey, flag, typing, context size, tools, capabilities, memory, vision, attachments, layout, and the read → change → re-read loop. |
+| `scripts/verify.mjs` | Headless Edge/Chrome check of the running app: console, hotkey, flag, typing, context size, tools, capabilities, memory, vision, attachments, layout, every Settings tab against its layout spec, and the read → change → re-read loop. |
+| `scripts/guards.mjs` | The runtime CSS's **layout guards** (pinned dialog chrome, host-CSS isolation): reports them; `--apply` adds the missing ones in place to an *edited* runtime copy and records the patch. |
 | `scripts/workspace.mjs` | Dev server for **in-app authoring**: the app's own agent reads its source and writes new tools (development only). |
-| `references/` | `framework.md` (concepts and formats), `capabilities.md` (**add a tool / toolset / skill / agent**), `in-app-authoring.md`, `upgrading.md` (**apps that already have it**, the manifest), `tools.md`, `memory-and-vision.md`, `context-sync.md`, `frameworks.md`, `providers.md`, `api.md`, `checklist.md`, `architecture.md`. |
+| `references/` | `framework.md` (concepts and formats), `capabilities.md` (**add a tool / toolset / skill / agent**), `in-app-authoring.md`, `upgrading.md` (**apps that already have it**, the manifest), `settings-layout.md` (the settings dialog's layout spec and host CSS), `tools.md`, `memory-and-vision.md`, `context-sync.md`, `frameworks.md`, `providers.md`, `api.md`, `checklist.md`, `architecture.md`. |
 | `CHANGELOG.md` | What each version changed, with **Upgrading** notes. |
 
 ## Step 0. Detect, then route (every time)
@@ -52,6 +53,13 @@ node <skill>/scripts/detect.mjs <app-root>
 
 - The user's words set the scope ("just update the runtime", "add a tool", "add a Track Designer agent"); without one,
   propose the full upgrade or install.
+- **Layout guards — every run on an app that has the agent** (install, upgrade, add a tool, anything): read detect's
+  `Layout guards` lines (`layoutGuards` with `--json`). A guard **MISSING** is fixed in this run, whatever the task:
+  an unchanged runtime copy is replaced (`references/upgrading.md`, U4); an edited one gets the guard blocks in place
+  with `node <skill>/scripts/guards.mjs <app-root> --apply` (its other edits stay; the patch is recorded in the
+  manifest). Tell the user in one line, e.g. "Also fixed the settings dialog: its tabs no longer clip and the page's
+  own CSS no longer leaks in (runtime CSS 1.6.1)." Details: `references/upgrading.md`, "Layout guards"; the spec:
+  `references/settings-layout.md`.
 - `.claude/`, `.github/agents`, `.agents/skills`, `.codex/` hold the *coding agent's* skills and agents — not the
   app's. Leave them alone; the app's live in its capability folder.
 - Without Node: search for `ai-agent.js` containing `export const VERSION`, for `createAiAgent(`, for an `index.json`
@@ -170,6 +178,8 @@ debounced with a max wait, so continuous updates need no throttle. `watch: 1500`
 
 Typing never reaches host shortcuts (`isolateKeys`); capture-phase handlers skip `.aia-scope`. `dialogs: 'dock'` for
 `showModal()`. Layout fixes under `html.aia-drawer-open` (`--aia-push-width`). Theme with `--aia-*` on `.aia-scope`.
+The page's own element CSS (`label`, `button`, `input`, `p`, `body { text-align }`…) does not reach the agent's UI: never
+"fix" the drawer or the settings dialog from app CSS (`references/settings-layout.md`).
 
 ### 9. Build the tools
 
@@ -223,7 +233,8 @@ node <skill>/scripts/validate.mjs <app-root>                                  # 
 node <skill>/scripts/verify.mjs http://127.0.0.1:8787/ --change "<js that changes the screen>"   # the running app
 ```
 
-(`--no-llm` without a model.) Then by hand: no console errors; the toggle and `Ctrl+I`; Settings > Context shows the
+(`--no-llm` without a model.) Then by hand: no console errors; the toggle and `Ctrl+I`; every Settings tab (the tabs stay
+visible, the layout matches `references/settings-layout.md`); Settings > Context shows the
 intended app/page/view/snapshot at a size the model fits; "Read the page" then "Page unchanged"; navigation; a tool
 call with its confirmation and roll-down; the agent picker and a skill (`/name`) if any; memory, a screenshot, an
 attached file. Full list: `references/checklist.md`.

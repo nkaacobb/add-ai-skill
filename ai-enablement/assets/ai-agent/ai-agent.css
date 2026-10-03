@@ -3,6 +3,17 @@
    Everything is scoped: classes start with .aia-, variables with --aia-, and the drawer, modal and launcher carry
    .aia-scope so the host page's styles and ours stay out of each other's way.
 
+   Host isolation (runtime 1.6.1): the host page's own element rules (label { display: flex; justify-content:
+   space-between }, button { … }, button:hover { transform: … }, input[type=number] { … }, p, h2, body { text-align:
+   center } …) never reach what the runtime renders.
+     - The "aia-guard: host-isolation" block below reverts every element inside .aia-scope to the browser's own
+       styles, at specificity (0,1,0): it beats host rules on bare elements.
+     - Every runtime rule is (0,2,0) or more — .aia-scope .aia-x, and .aia-scope.aia-x on the drawer, modal and
+       launcher themselves — so it also beats host rules with one class, attribute or state in them, and it states
+       the layout properties it depends on instead of relying on browser defaults.
+   To restyle a runtime class from the app, write it the same way (.aia-scope .aia-btn-primary { … }) in a stylesheet
+   loaded after this one — or, better, use the --aia-* variables.
+
    Re-theme from the host app, e.g.
      .aia-scope { --aia-accent: #7c3aed; --aia-accent-strong: #5b21b6; --aia-accent-soft: #ede9fe; }
    The runtime's theme rules are wrapped in :where() (zero specificity), so a host rule on .aia-scope always wins,
@@ -60,10 +71,16 @@ html.aia-drawer-open { --aia-push-width: min(var(--aia-drawer-width), 100vw); }
 .aia-scope {
   font-family: var(--aia-sans);
   font-size: 14px;
+  font-style: normal;
+  font-weight: 400;
   line-height: 1.5;
   color: var(--aia-text);
   text-align: left;
+  text-indent: 0;
+  text-transform: none;
+  text-shadow: none;
   letter-spacing: normal;
+  word-spacing: normal;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -122,6 +139,30 @@ html.aia-drawer-open { --aia-push-width: min(var(--aia-drawer-width), 100vw); }
   --aia-ring: 0 0 0 3px rgba(91, 147, 255, .32);
 }
 
+/* aia-guard: host-isolation
+   Keep this block where it is: after the theme tokens, before every other rule (scripts/detect.mjs looks for it;
+   references/settings-layout.md). It reverts the elements the runtime renders to the browser's own styles, so the
+   host page's rules on bare elements (label, button, input, select, p, h2, section, header, ul…) do not apply inside
+   .aia-scope. `all` leaves custom properties alone (the theme still works) and the [hidden] rule below still wins
+   (!important). Specificity (0,1,0): every runtime rule after this block is stronger, host element rules (0,0,n) are
+   weaker. svg and img are left out on purpose: `revert` would drop their presentation attributes (fill, stroke,
+   width, height); the icons' paint is set explicitly instead. */
+.aia-scope :where(div, span, p, a, b, strong, em, i, small, code, kbd, pre, del, blockquote, hr, h1, h2, h3, h4, h5, h6,
+  ul, ol, li, header, footer, section, aside, nav, form, fieldset, legend, label, input, select, option, optgroup,
+  textarea, button, details, summary, table, caption, thead, tbody, tfoot, tr, th, td, output) { all: revert; }
+.aia-scope :where(div, span, p, a, b, strong, em, i, small, code, kbd, pre, del, blockquote, h1, h2, h3, h4, h5, h6,
+  ul, ol, li, header, footer, section, aside, nav, form, label, button, details, summary, th, td)::before,
+.aia-scope :where(div, span, p, a, b, strong, em, i, small, code, kbd, pre, del, blockquote, h1, h2, h3, h4, h5, h6,
+  ul, ol, li, header, footer, section, aside, nav, form, label, button, details, summary, th, td)::after { all: revert; }
+.aia-scope :where(input, textarea)::placeholder { all: revert; }
+/* The icons (ui/icons.js): stroke icons paint with currentColor; host svg/path rules must not fill them. */
+.aia-scope svg[stroke] { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+.aia-scope svg[stroke-width="1.8"] { stroke-width: 1.8; }
+.aia-scope svg[stroke-width="1.9"] { stroke-width: 1.9; }
+.aia-scope svg[stroke-width="2"] { stroke-width: 2; }
+.aia-scope svg[stroke] * { fill: inherit; stroke: inherit; stroke-width: inherit; stroke-linecap: inherit; stroke-linejoin: inherit; }
+/* end aia-guard: host-isolation */
+
 .aia-scope *, .aia-scope *::before, .aia-scope *::after { box-sizing: border-box; }
 .aia-scope[hidden], .aia-scope [hidden] { display: none !important; }
 .aia-scope h2, .aia-scope h3, .aia-scope p { margin: 0; }
@@ -130,15 +171,31 @@ html.aia-drawer-open { --aia-push-width: min(var(--aia-drawer-width), 100vw); }
 
 /* ---------------------------------------------------------------- buttons */
 
-.aia-btn {
+/* Every button the runtime renders starts here: nothing from the host's button rules (button:hover too). Buttons
+   take the font of where they sit (font: inherit), as they always have. */
+.aia-scope :is(.aia-btn, .aia-icon-btn, .aia-mini-btn, .aia-tab, .aia-chip, .aia-msg-action, .aia-md-btn, .aia-menu-item,
+  .aia-saved-open, .aia-saved-delete, .aia-attach-remove, .aia-file, .aia-tool-line) {
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  font: inherit;
+  text-transform: none;
+  text-decoration: none;
+  text-shadow: none;
+  letter-spacing: normal;
+  box-shadow: none;
+  transform: none;
+  vertical-align: middle;
+}
+
+.aia-scope .aia-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
   padding: 7px 13px;
-  font-size: 13px;
-  font-weight: 560;
-  line-height: 1.2;
   color: var(--aia-text);
   background: var(--aia-bg-elevated);
   border: 1px solid var(--aia-border-strong);
@@ -147,17 +204,17 @@ html.aia-drawer-open { --aia-push-width: min(var(--aia-drawer-width), 100vw); }
   white-space: nowrap;
   transition: background .14s, border-color .14s, color .14s, transform .08s;
 }
-.aia-btn:hover { background: var(--aia-bg-hover); }
-.aia-btn:active { transform: translateY(1px); }
-.aia-btn:focus-visible { outline: none; box-shadow: var(--aia-ring); }
-.aia-btn:disabled { opacity: .55; cursor: progress; }
-.aia-btn-primary { color: var(--aia-on-accent); background: linear-gradient(140deg, var(--aia-accent), var(--aia-accent-strong)); border-color: transparent; }
-.aia-btn-primary:hover { background: linear-gradient(140deg, var(--aia-accent), var(--aia-accent-strong)); filter: brightness(1.08); }
-.aia-btn-ghost { background: transparent; border-color: var(--aia-border); color: var(--aia-text-muted); font-size: 12.5px; padding: 6px 11px; }
-.aia-btn-ghost:hover { color: var(--aia-text); }
-.aia-btn-sm { font-size: 11.5px; padding: 4px 9px; }
+.aia-scope .aia-btn:hover { background: var(--aia-bg-hover); }
+.aia-scope .aia-btn:active { transform: translateY(1px); }
+.aia-scope .aia-btn:focus-visible { outline: none; box-shadow: var(--aia-ring); }
+.aia-scope .aia-btn:disabled { opacity: .55; cursor: progress; }
+.aia-scope .aia-btn-primary { color: var(--aia-on-accent); background: linear-gradient(140deg, var(--aia-accent), var(--aia-accent-strong)); border-color: transparent; }
+.aia-scope .aia-btn-primary:hover { background: linear-gradient(140deg, var(--aia-accent), var(--aia-accent-strong)); filter: brightness(1.08); }
+.aia-scope .aia-btn-ghost { background: transparent; border-color: var(--aia-border); color: var(--aia-text-muted); padding: 6px 11px; }
+.aia-scope .aia-btn-ghost:hover { color: var(--aia-text); }
+.aia-scope .aia-btn-sm { padding: 4px 9px; }
 
-.aia-icon-btn {
+.aia-scope .aia-icon-btn {
   display: grid;
   place-items: center;
   width: 30px;
@@ -170,28 +227,29 @@ html.aia-drawer-open { --aia-push-width: min(var(--aia-drawer-width), 100vw); }
   cursor: pointer;
   transition: background .14s, color .14s, border-color .14s;
 }
-.aia-icon-btn svg { width: 17px; height: 17px; }
-.aia-icon-btn:hover { background: var(--aia-bg-hover); color: var(--aia-text); }
-.aia-icon-btn:focus-visible { outline: none; box-shadow: var(--aia-ring); }
-.aia-icon-btn.aia-active,
-.aia-icon-btn[aria-expanded="true"] { color: var(--aia-accent-strong); background: var(--aia-accent-soft); border-color: color-mix(in srgb, var(--aia-accent) 34%, transparent); }
+.aia-scope .aia-icon-btn svg { width: 17px; height: 17px; }
+.aia-scope .aia-icon-btn:hover { background: var(--aia-bg-hover); color: var(--aia-text); }
+.aia-scope .aia-icon-btn:focus-visible { outline: none; box-shadow: var(--aia-ring); }
+.aia-scope .aia-icon-btn.aia-active,
+.aia-scope .aia-icon-btn[aria-expanded="true"] { color: var(--aia-accent-strong); background: var(--aia-accent-soft); border-color: color-mix(in srgb, var(--aia-accent) 34%, transparent); }
 
-.aia-mark {
+.aia-scope .aia-mark {
   display: grid;
   place-items: center;
   width: 30px;
   height: 30px;
   flex: 0 0 auto;
+  margin: 0;
   border-radius: 8px;
   color: var(--aia-on-accent);
   background: linear-gradient(140deg, var(--aia-accent), var(--aia-accent-strong));
   box-shadow: var(--aia-shadow-sm);
 }
-.aia-mark svg { width: 17px; height: 17px; }
+.aia-scope .aia-mark svg { width: 17px; height: 17px; }
 
 /* ================================================================= drawer */
 
-.aia-drawer {
+.aia-scope.aia-drawer {
   position: fixed;
   top: 0;
   right: 0;
@@ -200,17 +258,23 @@ html.aia-drawer-open { --aia-push-width: min(var(--aia-drawer-width), 100vw); }
   display: flex;
   flex-direction: column;
   width: min(var(--aia-drawer-width), 100vw);
+  min-width: 0;
+  max-width: none;
   height: 100vh;
   height: 100dvh;
+  margin: 0;
+  padding: 0;
   background: var(--aia-bg-elevated);
+  border: 0;
   border-left: 1px solid var(--aia-border);
+  border-radius: 0;
   box-shadow: var(--aia-shadow);
   transform: translateX(100%);
   opacity: 0;
   visibility: hidden;
   transition: transform .26s cubic-bezier(.22, .61, .36, 1), opacity .2s, visibility 0s linear .26s;
 }
-.aia-drawer.aia-open {
+.aia-scope.aia-drawer.aia-open {
   transform: translateX(0);
   opacity: 1;
   visibility: visible;
@@ -224,43 +288,50 @@ html.aia-drawer-open { --aia-push-width: min(var(--aia-drawer-width), 100vw); }
 }
 .aia-resizing .aia-pushed.aia-pushed, .aia-resizing.aia-pushed.aia-pushed { transition: none; }
 
-.aia-head {
+/* The drawer is a flex column: the header, context bar, saved-chats list and composer keep their size, and only
+   the message list (and the saved-chats list inside its own panel) scrolls. */
+.aia-scope .aia-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
   flex: 0 0 auto;
+  margin: 0;
   padding: 10px 10px 10px 12px;
+  color: var(--aia-text);
   background: var(--aia-bg-subtle);
+  border: 0;
   border-bottom: 1px solid var(--aia-border);
 }
-.aia-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.aia-title-text { min-width: 0; }
-.aia-title-text h2 { font-size: 14px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.aia-title-text p { font-size: 11px; color: var(--aia-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
+.aia-scope .aia-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.aia-scope .aia-title-text { min-width: 0; }
+.aia-scope .aia-title-text h2 { margin: 0; font-size: 14px; font-weight: 650; line-height: 1.5; letter-spacing: normal; text-transform: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aia-scope .aia-title-text p { margin: 0; font-size: 11px; line-height: 1.5; color: var(--aia-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
 /* The agent picker stands in for the title when the application has more than one agent. */
-.aia-agent-pick {
+.aia-scope .aia-agent-pick {
   max-width: 100%; margin: 0 0 0 -4px; padding: 1px 18px 1px 4px; font: inherit; font-size: 14px; font-weight: 650; color: inherit;
   background: transparent; border: 1px solid transparent; border-radius: var(--aia-radius-sm); cursor: pointer; text-overflow: ellipsis;
 }
-.aia-agent-pick:hover, .aia-agent-pick:focus-visible { border-color: var(--aia-border); background: var(--aia-bg-elevated); }
-.aia-agent-pick option { font-weight: 400; color: var(--aia-text); background: var(--aia-bg); }
-.aia-head-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.aia-scope .aia-agent-pick:hover, .aia-scope .aia-agent-pick:focus-visible { border-color: var(--aia-border); background: var(--aia-bg-elevated); }
+.aia-scope .aia-agent-pick option { font-weight: 400; color: var(--aia-text); background: var(--aia-bg); }
+.aia-scope .aia-head-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
 
 /* ---------------------------------------------------------------- resizer */
 
-.aia-resizer {
+.aia-scope .aia-resizer {
   position: absolute;
   top: 0;
   bottom: 0;
   left: 0;
   z-index: 3;
   width: 14px;
+  margin: 0;
+  padding: 0;
   transform: translateX(-50%);
   cursor: col-resize;
   touch-action: none;
 }
-.aia-resizer::before {
+.aia-scope .aia-resizer::before {
   content: "";
   position: absolute;
   top: 50%;
@@ -272,38 +343,40 @@ html.aia-drawer-open { --aia-push-width: min(var(--aia-drawer-width), 100vw); }
   background: var(--aia-border-strong);
   transition: background .14s;
 }
-.aia-resizer:hover::before, .aia-resizer:focus-visible::before, .aia-resizer.aia-dragging::before { background: var(--aia-accent); }
-.aia-resizer:focus-visible { outline: none; }
+.aia-scope .aia-resizer:hover::before, .aia-scope .aia-resizer:focus-visible::before, .aia-scope .aia-resizer.aia-dragging::before { background: var(--aia-accent); }
+.aia-scope .aia-resizer:focus-visible { outline: none; }
 body.aia-resizing, body.aia-resizing * { cursor: col-resize !important; user-select: none !important; }
 
 /* ------------------------------------------------------------ context flag */
 
-.aia-context {
+.aia-scope .aia-context {
   display: flex;
   align-items: center;
   gap: 8px;
   flex: 0 0 auto;
   min-height: 34px;
+  margin: 0;
   padding: 5px 8px 5px 13px;
   font-size: 11.5px;
   color: var(--aia-text-muted);
   background: var(--aia-bg);
   border-bottom: 1px solid var(--aia-border);
 }
-.aia-context-dot {
+.aia-scope .aia-context-dot {
   width: 8px;
   height: 8px;
   flex: 0 0 auto;
   border-radius: 50%;
   background: var(--aia-text-faint);
 }
-[data-state="synced"] > .aia-context-dot { background: var(--aia-ok); box-shadow: 0 0 0 3px var(--aia-ok-soft); }
-[data-state="dirty"] > .aia-context-dot { background: var(--aia-warn); box-shadow: 0 0 0 3px var(--aia-warn-soft); }
-[data-state="unread"] > .aia-context-dot { background: var(--aia-accent); box-shadow: 0 0 0 3px var(--aia-accent-soft); }
-.aia-context[data-state="dirty"] { color: var(--aia-warn); }
-.aia-context-text { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.aia-context-hash {
+.aia-scope [data-state="synced"] > .aia-context-dot { background: var(--aia-ok); box-shadow: 0 0 0 3px var(--aia-ok-soft); }
+.aia-scope [data-state="dirty"] > .aia-context-dot { background: var(--aia-warn); box-shadow: 0 0 0 3px var(--aia-warn-soft); }
+.aia-scope [data-state="unread"] > .aia-context-dot { background: var(--aia-accent); box-shadow: 0 0 0 3px var(--aia-accent-soft); }
+.aia-scope .aia-context[data-state="dirty"] { color: var(--aia-warn); }
+.aia-scope .aia-context-text { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aia-scope .aia-context-hash {
   flex: 0 0 auto;
+  margin: 0;
   font-family: var(--aia-mono);
   font-size: 10.5px;
   padding: 1px 6px;
@@ -312,8 +385,8 @@ body.aia-resizing, body.aia-resizing * { cursor: col-resize !important; user-sel
   border: 1px solid var(--aia-border);
   border-radius: 5px;
 }
-.aia-context-hash:empty { display: none; }
-.aia-mini-btn {
+.aia-scope .aia-context-hash:empty { display: none; }
+.aia-scope .aia-mini-btn {
   display: grid;
   place-items: center;
   width: 24px;
@@ -326,70 +399,76 @@ body.aia-resizing, body.aia-resizing * { cursor: col-resize !important; user-sel
   border-radius: 5px;
   cursor: pointer;
 }
-.aia-mini-btn svg { width: 14px; height: 14px; }
-.aia-mini-btn:hover { background: var(--aia-bg-hover); color: var(--aia-text); }
-.aia-mini-btn:focus-visible { outline: none; box-shadow: var(--aia-ring); }
+.aia-scope .aia-mini-btn svg { width: 14px; height: 14px; }
+.aia-scope .aia-mini-btn:hover { background: var(--aia-bg-hover); color: var(--aia-text); }
+.aia-scope .aia-mini-btn:focus-visible { outline: none; box-shadow: var(--aia-ring); }
 
 /* --------------------------------------------------------------- library */
 
-.aia-library {
+.aia-scope .aia-library {
   display: flex;
   flex-direction: column;
   flex: 0 0 auto;
   max-height: 46%;
+  margin: 0;
+  padding: 0;
   background: var(--aia-bg-subtle);
+  border: 0;
   border-bottom: 1px solid var(--aia-border);
 }
-.aia-library-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 12px; font-size: 10.5px; color: var(--aia-text-muted); }
-.aia-library-head h3 { font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; }
-.aia-library-list { flex: 1 1 auto; overflow-y: auto; padding: 0 6px 6px; scrollbar-width: thin; }
-.aia-library-empty { padding: 8px 6px 12px; font-size: 12px; color: var(--aia-text-muted); }
-.aia-saved { display: flex; gap: 2px; margin-bottom: 3px; border: 1px solid transparent; border-radius: var(--aia-radius-sm); }
-.aia-saved:hover { background: var(--aia-bg-hover); }
-.aia-saved.aia-active { background: var(--aia-accent-soft); border-color: color-mix(in srgb, var(--aia-accent) 32%, transparent); }
-.aia-saved-open { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; gap: 1px; padding: 6px 8px; text-align: left; color: inherit; background: transparent; border: 0; border-radius: var(--aia-radius-sm); cursor: pointer; }
-.aia-saved-open:focus-visible { outline: none; box-shadow: var(--aia-ring); }
-.aia-saved-title { font-size: 12.5px; font-weight: 560; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.aia-saved.aia-active .aia-saved-title { color: var(--aia-accent-strong); }
-.aia-saved-meta { font-family: var(--aia-mono); font-size: 10px; color: var(--aia-text-faint); }
-.aia-saved-delete { display: grid; place-items: center; width: 28px; padding: 0; color: var(--aia-text-faint); background: transparent; border: 0; border-radius: var(--aia-radius-sm); cursor: pointer; opacity: 0; transition: opacity .12s, background .12s, color .12s; }
-.aia-saved-delete svg { width: 14px; height: 14px; }
-.aia-saved:hover .aia-saved-delete, .aia-saved-delete:focus-visible { opacity: 1; }
-.aia-saved-delete:hover { color: var(--aia-danger); background: var(--aia-danger-soft); }
-.aia-saved-delete.aia-armed { opacity: 1; color: var(--aia-danger); background: var(--aia-danger-soft); animation: aia-pulse 1.1s ease-in-out infinite; }
+.aia-scope .aia-library-head { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; padding: 7px 12px; font-size: 10.5px; color: var(--aia-text-muted); }
+.aia-scope .aia-library-head h3 { margin: 0; font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; }
+.aia-scope .aia-library-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 6px 6px; scrollbar-width: thin; }
+.aia-scope .aia-library-empty { margin: 0; padding: 8px 6px 12px; font-size: 12px; color: var(--aia-text-muted); }
+.aia-scope .aia-saved { display: flex; gap: 2px; margin-bottom: 3px; border: 1px solid transparent; border-radius: var(--aia-radius-sm); }
+.aia-scope .aia-saved:hover { background: var(--aia-bg-hover); }
+.aia-scope .aia-saved.aia-active { background: var(--aia-accent-soft); border-color: color-mix(in srgb, var(--aia-accent) 32%, transparent); }
+.aia-scope .aia-saved-open { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; gap: 1px; padding: 6px 8px; text-align: left; color: inherit; background: transparent; border: 0; border-radius: var(--aia-radius-sm); cursor: pointer; }
+.aia-scope .aia-saved-open:focus-visible { outline: none; box-shadow: var(--aia-ring); }
+.aia-scope .aia-saved-title { font-size: 12.5px; font-weight: 560; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aia-scope .aia-saved.aia-active .aia-saved-title { color: var(--aia-accent-strong); }
+.aia-scope .aia-saved-meta { font-family: var(--aia-mono); font-size: 10px; color: var(--aia-text-faint); }
+.aia-scope .aia-saved-delete { display: grid; place-items: center; width: 28px; padding: 0; color: var(--aia-text-faint); background: transparent; border: 0; border-radius: var(--aia-radius-sm); cursor: pointer; opacity: 0; transition: opacity .12s, background .12s, color .12s; }
+.aia-scope .aia-saved-delete svg { width: 14px; height: 14px; }
+.aia-scope .aia-saved:hover .aia-saved-delete, .aia-scope .aia-saved-delete:focus-visible { opacity: 1; }
+.aia-scope .aia-saved-delete:hover { color: var(--aia-danger); background: var(--aia-danger-soft); }
+.aia-scope .aia-saved-delete.aia-armed { opacity: 1; color: var(--aia-danger); background: var(--aia-danger-soft); animation: aia-pulse 1.1s ease-in-out infinite; }
 
 /* -------------------------------------------------------------- messages */
 
-.aia-messages {
+.aia-scope .aia-messages {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
+  margin: 0;
   padding: 14px;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
 }
-.aia-msg { display: flex; flex-direction: column; align-items: flex-start; }
-.aia-msg.aia-user { align-items: flex-end; }
-.aia-bubble {
+.aia-scope .aia-msg { display: flex; flex-direction: column; align-items: flex-start; flex-shrink: 0; }
+.aia-scope .aia-msg.aia-user { align-items: flex-end; }
+.aia-scope .aia-bubble {
   max-width: 94%;
   padding: 10px 13px;
   font-size: 13.5px;
   line-height: 1.58;
+  text-align: left;
   border-radius: 12px;
   overflow-wrap: anywhere;
 }
-.aia-assistant .aia-bubble { width: 94%; background: var(--aia-bg-subtle); border: 1px solid var(--aia-border); border-bottom-left-radius: 4px; }
-.aia-welcome .aia-bubble { width: auto; }
-.aia-user .aia-bubble { color: var(--aia-on-accent); background: linear-gradient(140deg, var(--aia-accent), var(--aia-accent-strong)); border-bottom-right-radius: 4px; white-space: pre-wrap; }
-.aia-user.aia-unsent .aia-bubble { opacity: .55; }
-.aia-error .aia-bubble { background: var(--aia-danger-soft); border-color: color-mix(in srgb, var(--aia-danger) 45%, var(--aia-border)); }
-.aia-bubble > p { margin: 0 0 8px; }
-.aia-bubble > p:last-child { margin-bottom: 0; }
+.aia-scope .aia-assistant .aia-bubble { width: 94%; background: var(--aia-bg-subtle); border: 1px solid var(--aia-border); border-bottom-left-radius: 4px; }
+.aia-scope .aia-welcome .aia-bubble { width: auto; }
+.aia-scope .aia-user .aia-bubble { color: var(--aia-on-accent); background: linear-gradient(140deg, var(--aia-accent), var(--aia-accent-strong)); border-bottom-right-radius: 4px; white-space: pre-wrap; }
+.aia-scope .aia-user.aia-unsent .aia-bubble { opacity: .55; }
+.aia-scope .aia-error .aia-bubble { background: var(--aia-danger-soft); border-color: color-mix(in srgb, var(--aia-danger) 45%, var(--aia-border)); }
+.aia-scope .aia-bubble > p { margin: 0 0 8px; }
+.aia-scope .aia-bubble > p:last-child { margin-bottom: 0; }
 
-.aia-msg-meta { margin-top: 4px; max-width: 94%; }
-.aia-sync {
+.aia-scope .aia-msg-meta { margin-top: 4px; max-width: 94%; }
+.aia-scope .aia-sync {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -400,16 +479,15 @@ body.aia-resizing, body.aia-resizing * { cursor: col-resize !important; user-sel
   border: 1px solid var(--aia-border);
   border-radius: 999px;
 }
-.aia-sync svg { width: 12px; height: 12px; flex: 0 0 auto; }
-.aia-sync code { font-family: var(--aia-mono); font-size: 10px; }
-.aia-sync-read { color: var(--aia-accent-strong); border-color: color-mix(in srgb, var(--aia-accent) 35%, var(--aia-border)); background: var(--aia-accent-soft); }
-.aia-sync-same { color: var(--aia-ok); border-color: color-mix(in srgb, var(--aia-ok) 32%, var(--aia-border)); }
-.aia-sync-skill { color: var(--aia-accent-strong); border-color: color-mix(in srgb, var(--aia-accent) 35%, var(--aia-border)); }
+.aia-scope .aia-sync svg { width: 12px; height: 12px; flex: 0 0 auto; }
+.aia-scope .aia-sync code { font-family: var(--aia-mono); font-size: 10px; }
+.aia-scope .aia-sync-read { color: var(--aia-accent-strong); border-color: color-mix(in srgb, var(--aia-accent) 35%, var(--aia-border)); background: var(--aia-accent-soft); }
+.aia-scope .aia-sync-same { color: var(--aia-ok); border-color: color-mix(in srgb, var(--aia-ok) 32%, var(--aia-border)); }
+.aia-scope .aia-sync-skill { color: var(--aia-accent-strong); border-color: color-mix(in srgb, var(--aia-accent) 35%, var(--aia-border)); }
 
-.aia-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.aia-chip {
+.aia-scope .aia-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.aia-scope .aia-chip {
   padding: 5px 11px;
-  font-size: 12px;
   color: var(--aia-accent-strong);
   background: var(--aia-bg-elevated);
   border: 1px solid color-mix(in srgb, var(--aia-accent) 35%, var(--aia-border));
@@ -418,10 +496,10 @@ body.aia-resizing, body.aia-resizing * { cursor: col-resize !important; user-sel
   text-align: left;
   transition: background .12s;
 }
-.aia-chip:hover { background: var(--aia-accent-soft); }
-.aia-chip:focus-visible { outline: none; box-shadow: var(--aia-ring); }
+.aia-scope .aia-chip:hover { background: var(--aia-accent-soft); }
+.aia-scope .aia-chip:focus-visible { outline: none; box-shadow: var(--aia-ring); }
 
-.aia-notice {
+.aia-scope .aia-notice {
   margin: 0 0 8px;
   padding: 6px 10px;
   font-size: 11.5px;
@@ -430,21 +508,22 @@ body.aia-resizing, body.aia-resizing * { cursor: col-resize !important; user-sel
   border: 1px solid color-mix(in srgb, var(--aia-warn) 32%, transparent);
   border-radius: var(--aia-radius-sm);
 }
-.aia-stream-status { color: var(--aia-text-muted); font-style: italic; font-size: 12.5px; margin: 0; }
-.aia-busy .aia-stream-status::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: aia-dots 1.2s steps(4, end) infinite; }
-.aia-hints { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--aia-text-muted); }
-.aia-hints li { margin-bottom: 3px; }
+.aia-scope .aia-stream-status { color: var(--aia-text-muted); font-style: italic; font-size: 12.5px; margin: 0; }
+.aia-scope.aia-busy .aia-stream-status::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: aia-dots 1.2s steps(4, end) infinite; }
+.aia-scope .aia-hints { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--aia-text-muted); list-style: disc; }
+.aia-scope .aia-hints li { margin: 0 0 3px; }
 
-.aia-reasoning {
-  margin-bottom: 9px;
+.aia-scope .aia-reasoning {
+  margin: 0 0 9px;
+  padding: 0;
   font-size: 12px;
   background: color-mix(in srgb, var(--aia-bg) 60%, transparent);
   border: 1px dashed var(--aia-border-strong);
   border-radius: var(--aia-radius-sm);
 }
-.aia-reasoning summary { padding: 6px 10px; font-size: 11.5px; color: var(--aia-text-muted); cursor: pointer; user-select: none; }
-.aia-reasoning summary:hover { color: var(--aia-text); }
-.aia-reasoning-text {
+.aia-scope .aia-reasoning summary { margin: 0; padding: 6px 10px; font-size: 11.5px; color: var(--aia-text-muted); background: none; text-align: left; cursor: pointer; user-select: none; }
+.aia-scope .aia-reasoning summary:hover { color: var(--aia-text); }
+.aia-scope .aia-reasoning-text {
   max-height: 240px;
   overflow-y: auto;
   padding: 6px 11px 10px;
@@ -458,22 +537,22 @@ body.aia-resizing, body.aia-resizing * { cursor: col-resize !important; user-sel
 }
 
 /* Tool calls in a reply: one chip per call, with a card when the user must decide. */
-.aia-tool-log { display: flex; flex-direction: column; gap: 5px; margin-bottom: 9px; }
-.aia-tool { border: 1px solid var(--aia-border); border-radius: var(--aia-radius-sm); background: var(--aia-bg-elevated); font-size: 12px; }
-.aia-tool-line { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 9px; }
+.aia-scope .aia-tool-log { display: flex; flex-direction: column; gap: 5px; margin-bottom: 9px; }
+.aia-scope .aia-tool { border: 1px solid var(--aia-border); border-radius: var(--aia-radius-sm); background: var(--aia-bg-elevated); font-size: 12px; }
+.aia-scope .aia-tool-line { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 9px; }
 /* The line is a button: a finished call rolls down to show what was sent and what came back. */
-button.aia-tool-line { width: 100%; margin: 0; border: 0; border-radius: inherit; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-button.aia-tool-line:disabled { cursor: default; color: inherit; }
-button.aia-tool-line:not(:disabled):hover .aia-tool-title { text-decoration: underline; text-underline-offset: 2px; }
-button.aia-tool-line:focus-visible { outline: none; box-shadow: var(--aia-ring); }
-.aia-tool-caret { flex: 0 0 auto; width: 9px; font-size: 10px; line-height: 1; color: var(--aia-text-muted); transition: transform .15s ease; }
-.aia-tool-line:disabled .aia-tool-caret { visibility: hidden; }
-.aia-tool-line[aria-expanded="true"] .aia-tool-caret { transform: rotate(90deg); }
-.aia-tool-detail { padding: 2px 9px 9px; border-top: 1px dashed var(--aia-border); }
-.aia-tool-problem { margin: 7px 0 0; font-size: 12px; color: var(--aia-danger); }
-.aia-tool-part { margin-top: 7px; }
-.aia-tool-part-label { margin-bottom: 3px; font-size: 10.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--aia-text-muted); }
-.aia-tool-part pre {
+.aia-scope button.aia-tool-line { width: 100%; margin: 0; border: 0; border-radius: inherit; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.aia-scope button.aia-tool-line:disabled { cursor: default; color: inherit; }
+.aia-scope button.aia-tool-line:not(:disabled):hover .aia-tool-title { text-decoration: underline; text-underline-offset: 2px; }
+.aia-scope button.aia-tool-line:focus-visible { outline: none; box-shadow: var(--aia-ring); }
+.aia-scope .aia-tool-caret { flex: 0 0 auto; width: 9px; font-size: 10px; line-height: 1; color: var(--aia-text-muted); transition: transform .15s ease; }
+.aia-scope .aia-tool-line:disabled .aia-tool-caret { visibility: hidden; }
+.aia-scope .aia-tool-line[aria-expanded="true"] .aia-tool-caret { transform: rotate(90deg); }
+.aia-scope .aia-tool-detail { padding: 2px 9px 9px; border-top: 1px dashed var(--aia-border); }
+.aia-scope .aia-tool-problem { margin: 7px 0 0; font-size: 12px; color: var(--aia-danger); }
+.aia-scope .aia-tool-part { margin-top: 7px; }
+.aia-scope .aia-tool-part-label { margin-bottom: 3px; font-size: 10.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--aia-text-muted); }
+.aia-scope .aia-tool-part pre {
   margin: 0;
   max-height: 200px;
   overflow: auto;
@@ -488,123 +567,124 @@ button.aia-tool-line:focus-visible { outline: none; box-shadow: var(--aia-ring);
   border: 1px solid var(--aia-border);
   border-radius: var(--aia-radius-sm);
 }
-.aia-tool-detail .aia-tool-buttons { margin-top: 8px; }
-.aia-tool-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--aia-text-faint); }
-.aia-tool-title { flex: 0 0 auto; font-weight: 600; }
-.aia-tool-call { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--aia-mono); font-size: 11px; color: var(--aia-text-muted); }
-.aia-tool-state { flex: 0 0 auto; font-size: 11px; color: var(--aia-text-muted); }
-.aia-tool[data-status="running"] .aia-tool-dot, .aia-tool[data-status="waiting"] .aia-tool-dot { background: var(--aia-accent); animation: aia-pulse 1.1s ease-in-out infinite; }
-.aia-tool[data-status="waiting"] { border-color: color-mix(in srgb, var(--aia-accent) 50%, var(--aia-border)); }
-.aia-tool[data-status="ok"] .aia-tool-dot { background: var(--aia-ok); }
-.aia-tool[data-status="ok"] .aia-tool-state { color: var(--aia-ok); }
-.aia-tool[data-status="error"] .aia-tool-dot { background: var(--aia-danger); }
-.aia-tool[data-status="error"] .aia-tool-state { color: var(--aia-danger); }
-.aia-tool[data-status="declined"] .aia-tool-dot, .aia-tool[data-status="off"] .aia-tool-dot, .aia-tool[data-status="skipped"] .aia-tool-dot { background: var(--aia-warn); }
-.aia-tool-card { padding: 2px 9px 9px; }
-.aia-tool-card p { margin: 0 0 8px; font-size: 12.5px; }
-.aia-tool-reason { color: var(--aia-text-muted); font-style: italic; }
+.aia-scope .aia-tool-detail .aia-tool-buttons { margin-top: 8px; }
+.aia-scope .aia-tool-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--aia-text-faint); }
+.aia-scope .aia-tool-title { flex: 0 0 auto; font-weight: 600; }
+.aia-scope .aia-tool-call { flex: 1 1 auto; min-width: 0; margin: 0; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--aia-mono); font-size: 11px; color: var(--aia-text-muted); background: none; }
+.aia-scope .aia-tool-state { flex: 0 0 auto; font-size: 11px; color: var(--aia-text-muted); }
+.aia-scope .aia-tool[data-status="running"] .aia-tool-dot, .aia-scope .aia-tool[data-status="waiting"] .aia-tool-dot { background: var(--aia-accent); animation: aia-pulse 1.1s ease-in-out infinite; }
+.aia-scope .aia-tool[data-status="waiting"] { border-color: color-mix(in srgb, var(--aia-accent) 50%, var(--aia-border)); }
+.aia-scope .aia-tool[data-status="ok"] .aia-tool-dot { background: var(--aia-ok); }
+.aia-scope .aia-tool[data-status="ok"] .aia-tool-state { color: var(--aia-ok); }
+.aia-scope .aia-tool[data-status="error"] .aia-tool-dot { background: var(--aia-danger); }
+.aia-scope .aia-tool[data-status="error"] .aia-tool-state { color: var(--aia-danger); }
+.aia-scope .aia-tool[data-status="declined"] .aia-tool-dot, .aia-scope .aia-tool[data-status="off"] .aia-tool-dot, .aia-scope .aia-tool[data-status="skipped"] .aia-tool-dot { background: var(--aia-warn); }
+.aia-scope .aia-tool-card { padding: 2px 9px 9px; }
+.aia-scope .aia-tool-card p { margin: 0 0 8px; font-size: 12.5px; }
+.aia-scope .aia-tool-reason { color: var(--aia-text-muted); font-style: italic; }
 /* The whole file a write_ai_file call would write (development workspace), shown before the user confirms. */
-.aia-tool-file {
+.aia-scope .aia-tool-file {
   margin: 6px 0 8px; padding: 7px 9px; max-height: 260px; overflow: auto; font-family: var(--aia-mono); font-size: 11px; line-height: 1.45;
   white-space: pre; background: var(--aia-bg-elevated); border: 1px solid var(--aia-border); border-radius: var(--aia-radius-sm);
 }
-.aia-diff .aia-diff-line { display: block; }
-.aia-diff .aia-diff-del { color: var(--aia-danger); background: color-mix(in srgb, var(--aia-danger) 10%, transparent); }
-.aia-diff .aia-diff-add { color: var(--aia-ok); background: color-mix(in srgb, var(--aia-ok) 10%, transparent); }
-.aia-diff .aia-diff-same { color: var(--aia-text-muted); }
-.aia-diff .aia-diff-gap { display: block; color: var(--aia-text-muted); text-align: center; }
-.aia-diff-count { font-weight: 600; }
-.aia-tool-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.aia-scope .aia-diff .aia-diff-line { display: block; }
+.aia-scope .aia-diff .aia-diff-del { color: var(--aia-danger); background: color-mix(in srgb, var(--aia-danger) 10%, transparent); }
+.aia-scope .aia-diff .aia-diff-add { color: var(--aia-ok); background: color-mix(in srgb, var(--aia-ok) 10%, transparent); }
+.aia-scope .aia-diff .aia-diff-same { color: var(--aia-text-muted); }
+.aia-scope .aia-diff .aia-diff-gap { display: block; color: var(--aia-text-muted); text-align: center; }
+.aia-scope .aia-diff-count { font-weight: 600; }
+.aia-scope .aia-tool-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* A screenshot on a chip (the agent looked at the screen), on a question, and waiting in the composer. */
-.aia-tool-shot { padding: 0 9px 9px; }
-.aia-shot { display: block; max-width: 100%; width: auto; height: auto; max-height: 120px; border: 1px solid var(--aia-border-strong); border-radius: var(--aia-radius-sm); background: var(--aia-bg); cursor: zoom-in; }
-.aia-shot:hover { border-color: var(--aia-accent); }
-.aia-shots { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 5px; max-width: 94%; }
-.aia-shot-view { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 14px; background: color-mix(in srgb, var(--aia-bg) 92%, transparent); cursor: zoom-out; }
-.aia-shot-view img { max-width: 100%; max-height: calc(100% - 46px); object-fit: contain; border: 1px solid var(--aia-border-strong); border-radius: var(--aia-radius-sm); box-shadow: var(--aia-shadow); }
+.aia-scope .aia-tool-shot { padding: 0 9px 9px; }
+.aia-scope .aia-shot { display: block; max-width: 100%; width: auto; height: auto; max-height: 120px; margin: 0; padding: 0; border: 1px solid var(--aia-border-strong); border-radius: var(--aia-radius-sm); background: var(--aia-bg); cursor: zoom-in; }
+.aia-scope .aia-shot:hover { border-color: var(--aia-accent); }
+.aia-scope .aia-shots { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 5px; max-width: 94%; }
+.aia-scope .aia-shot-view { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 14px; background: color-mix(in srgb, var(--aia-bg) 92%, transparent); cursor: zoom-out; }
+.aia-scope .aia-shot-view img { max-width: 100%; max-height: calc(100% - 46px); margin: 0; object-fit: contain; border: 1px solid var(--aia-border-strong); border-radius: var(--aia-radius-sm); box-shadow: var(--aia-shadow); }
 
 /* Settings > Memory */
-.aia-memory-list { display: flex; flex-direction: column; gap: 7px; }
-.aia-memory-row { display: flex; flex-direction: column; gap: 3px; }
-.aia-modal .aia-memory-row textarea { min-height: 0; font-family: inherit; font-size: 13px; line-height: 1.45; resize: vertical; }
-.aia-memory-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10.5px; color: var(--aia-text-faint); }
-.aia-memory-meta .aia-icon-btn { width: 24px; height: 22px; }
-.aia-memory-meta .aia-icon-btn svg { width: 14px; height: 14px; }
-.aia-memory-meta .aia-icon-btn:hover { color: var(--aia-danger); }
+.aia-scope .aia-memory-list { display: flex; flex-direction: column; gap: 7px; }
+.aia-scope .aia-memory-row { display: flex; flex-direction: column; align-items: stretch; gap: 3px; }
+.aia-scope.aia-modal .aia-memory-row textarea { min-height: 0; font-family: inherit; font-size: 13px; line-height: 1.45; resize: vertical; }
+.aia-scope .aia-memory-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10.5px; color: var(--aia-text-faint); }
+.aia-scope .aia-memory-meta .aia-icon-btn { width: 24px; height: 22px; }
+.aia-scope .aia-memory-meta .aia-icon-btn svg { width: 14px; height: 14px; }
+.aia-scope .aia-memory-meta .aia-icon-btn:hover { color: var(--aia-danger); }
 
 /* Settings > Tools */
-.aia-tool-list { display: flex; flex-direction: column; gap: 12px; }
-.aia-tool-group h4 { margin: 0 0 6px; font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--aia-text-muted); }
-.aia-tool-row { display: flex; align-items: flex-start; gap: 9px; padding: 7px 8px; border: 1px solid var(--aia-border); border-radius: var(--aia-radius-sm); background: var(--aia-bg-elevated); cursor: pointer; }
-.aia-tool-row + .aia-tool-row { margin-top: 5px; }
-.aia-tool-row input { margin: 3px 0 0; width: 15px; height: 15px; flex: 0 0 auto; accent-color: var(--aia-accent); }
-.aia-tool-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
-.aia-tool-name { font-size: 13px; font-weight: 600; }
-.aia-tool-name code { font-family: var(--aia-mono); font-size: 10.5px; font-weight: 400; color: var(--aia-text-muted); }
-.aia-tool-desc { font-size: 11.5px; color: var(--aia-text-muted); }
-.aia-tool-tags { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: 0 0 auto; }
-.aia-badge { padding: 1px 7px; font-size: 10px; font-weight: 650; border-radius: 999px; border: 1px solid var(--aia-border); color: var(--aia-text-muted); white-space: nowrap; }
-.aia-badge-read { color: var(--aia-ok); border-color: color-mix(in srgb, var(--aia-ok) 40%, var(--aia-border)); }
-.aia-badge-write { color: var(--aia-warn); border-color: color-mix(in srgb, var(--aia-warn) 40%, var(--aia-border)); }
-.aia-badge-destructive { color: var(--aia-danger); border-color: color-mix(in srgb, var(--aia-danger) 45%, var(--aia-border)); }
-.aia-badge-here { color: var(--aia-accent-strong); border-color: color-mix(in srgb, var(--aia-accent) 40%, var(--aia-border)); }
-.aia-badge-external, .aia-badge-system, .aia-badge-deny { color: var(--aia-danger); border-color: color-mix(in srgb, var(--aia-danger) 45%, var(--aia-border)); }
-.aia-badge-ask { color: var(--aia-warn); border-color: color-mix(in srgb, var(--aia-warn) 40%, var(--aia-border)); }
-.aia-badge-allow { color: var(--aia-ok); border-color: color-mix(in srgb, var(--aia-ok) 40%, var(--aia-border)); }
-.aia-tool-row.aia-tool-blocked { opacity: .62; cursor: not-allowed; }
+.aia-scope .aia-tool-list { display: flex; flex-direction: column; align-items: stretch; gap: 12px; }
+.aia-scope .aia-tool-group h4 { margin: 0 0 6px; font-size: 11px; font-weight: 650; line-height: 1.5; letter-spacing: .05em; text-transform: uppercase; text-align: left; color: var(--aia-text-muted); }
+.aia-scope .aia-tool-row { display: flex; align-items: flex-start; justify-content: flex-start; gap: 9px; margin: 0; padding: 7px 8px; font: inherit; color: var(--aia-text); text-align: left; border: 1px solid var(--aia-border); border-radius: var(--aia-radius-sm); background: var(--aia-bg-elevated); cursor: pointer; }
+.aia-scope .aia-tool-row + .aia-tool-row { margin-top: 5px; }
+.aia-scope .aia-tool-row input { margin: 3px 0 0; width: 15px; height: 15px; flex: 0 0 auto; accent-color: var(--aia-accent); }
+.aia-scope .aia-tool-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
+.aia-scope .aia-tool-name { font-size: 13px; font-weight: 600; }
+.aia-scope .aia-tool-name code { font-family: var(--aia-mono); font-size: 10.5px; font-weight: 400; color: var(--aia-text-muted); }
+.aia-scope .aia-tool-desc { font-size: 11.5px; color: var(--aia-text-muted); }
+.aia-scope .aia-tool-tags { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: 0 0 auto; }
+.aia-scope .aia-badge { padding: 1px 7px; font-size: 10px; font-weight: 650; border-radius: 999px; border: 1px solid var(--aia-border); color: var(--aia-text-muted); white-space: nowrap; }
+.aia-scope .aia-badge-read { color: var(--aia-ok); border-color: color-mix(in srgb, var(--aia-ok) 40%, var(--aia-border)); }
+.aia-scope .aia-badge-write { color: var(--aia-warn); border-color: color-mix(in srgb, var(--aia-warn) 40%, var(--aia-border)); }
+.aia-scope .aia-badge-destructive { color: var(--aia-danger); border-color: color-mix(in srgb, var(--aia-danger) 45%, var(--aia-border)); }
+.aia-scope .aia-badge-here { color: var(--aia-accent-strong); border-color: color-mix(in srgb, var(--aia-accent) 40%, var(--aia-border)); }
+.aia-scope .aia-badge-external, .aia-scope .aia-badge-system, .aia-scope .aia-badge-deny { color: var(--aia-danger); border-color: color-mix(in srgb, var(--aia-danger) 45%, var(--aia-border)); }
+.aia-scope .aia-badge-ask { color: var(--aia-warn); border-color: color-mix(in srgb, var(--aia-warn) 40%, var(--aia-border)); }
+.aia-scope .aia-badge-allow { color: var(--aia-ok); border-color: color-mix(in srgb, var(--aia-ok) 40%, var(--aia-border)); }
+.aia-scope .aia-tool-row.aia-tool-blocked { opacity: .62; cursor: not-allowed; }
 /* Settings > Agent: the active agent and its skills. */
-.aia-caps .aia-cap-line { margin: 2px 0 10px; font-size: 12.5px; }
-.aia-cap-list { margin: 4px 0 0; padding-left: 18px; font-size: 12.5px; }
-.aia-cap-list li + li { margin-top: 4px; }
-.aia-cap-list code { font-family: var(--aia-mono); font-size: 11.5px; }
-.aia-ctx-warn .aia-warn-note, .aia-warn-note { padding: 7px 10px; color: var(--aia-text); background: var(--aia-warn-soft); border: 1px solid color-mix(in srgb, var(--aia-warn) 34%, var(--aia-border)); border-left: 3px solid var(--aia-warn); border-radius: var(--aia-radius-sm); }
+.aia-scope .aia-caps .aia-cap-line { margin: 2px 0 10px; font-size: 12.5px; }
+.aia-scope .aia-cap-list { margin: 4px 0 0; padding-left: 18px; font-size: 12.5px; text-align: left; list-style: disc; }
+.aia-scope .aia-cap-list li { margin: 0; }
+.aia-scope .aia-cap-list li + li { margin-top: 4px; }
+.aia-scope .aia-cap-list code { font-family: var(--aia-mono); font-size: 11.5px; }
+.aia-scope .aia-ctx-warn .aia-warn-note, .aia-scope .aia-warn-note { padding: 7px 10px; color: var(--aia-text); background: var(--aia-warn-soft); border: 1px solid color-mix(in srgb, var(--aia-warn) 34%, var(--aia-border)); border-left: 3px solid var(--aia-warn); border-radius: var(--aia-radius-sm); }
 
-.aia-msg-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; padding-top: 7px; border-top: 1px solid color-mix(in srgb, var(--aia-border) 70%, transparent); }
-.aia-msg-action {
+.aia-scope .aia-msg-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; padding-top: 7px; border-top: 1px solid color-mix(in srgb, var(--aia-border) 70%, transparent); }
+.aia-scope .aia-msg-action {
   padding: 3px 10px;
-  font-size: 11px;
-  font-weight: 560;
   color: var(--aia-text-muted);
   background: transparent;
   border: 1px solid var(--aia-border);
   border-radius: 999px;
   cursor: pointer;
 }
-.aia-msg-action:hover { background: var(--aia-bg-hover); color: var(--aia-text); }
-.aia-msg-action:focus-visible { outline: none; box-shadow: var(--aia-ring); }
-.aia-msg-action.aia-done { color: var(--aia-ok); border-color: color-mix(in srgb, var(--aia-ok) 45%, transparent); background: var(--aia-ok-soft); }
-.aia-msg-foot { margin-top: 6px; font-family: var(--aia-mono); font-size: 10px; color: var(--aia-text-faint); }
+.aia-scope .aia-msg-action:hover { background: var(--aia-bg-hover); color: var(--aia-text); }
+.aia-scope .aia-msg-action:focus-visible { outline: none; box-shadow: var(--aia-ring); }
+.aia-scope .aia-msg-action.aia-done { color: var(--aia-ok); border-color: color-mix(in srgb, var(--aia-ok) 45%, transparent); background: var(--aia-ok-soft); }
+.aia-scope .aia-msg-foot { margin-top: 6px; font-family: var(--aia-mono); font-size: 10px; color: var(--aia-text-faint); }
 
 /* ------------------------------------------------------------- markdown */
 
-.aia-md > :first-child { margin-top: 0; }
-.aia-md > :last-child { margin-bottom: 0; }
-.aia-md p { margin: 0 0 9px; }
-.aia-md h1, .aia-md h2, .aia-md h3, .aia-md h4, .aia-md h5, .aia-md h6 { margin: 14px 0 7px; font-weight: 650; line-height: 1.3; }
-.aia-md h1 { font-size: 16.5px; }
-.aia-md h2 { font-size: 15px; padding-bottom: 4px; border-bottom: 1px solid var(--aia-border); }
-.aia-md h3 { font-size: 14px; }
-.aia-md h4, .aia-md h5, .aia-md h6 { font-size: 13px; color: var(--aia-text-muted); }
-.aia-md ul, .aia-md ol { margin: 0 0 9px; padding-left: 21px; }
-.aia-md li { margin-bottom: 3px; }
-.aia-md li::marker { color: var(--aia-text-muted); }
-.aia-md li > ul, .aia-md li > ol { margin: 3px 0 0; }
-.aia-md strong { font-weight: 650; }
-.aia-md a { color: var(--aia-accent-strong); text-decoration: underline; text-underline-offset: 2px; }
-.aia-md a:hover { color: var(--aia-accent); }
-.aia-md del { color: var(--aia-text-faint); }
-.aia-md hr { margin: 12px 0; border: 0; border-top: 1px solid var(--aia-border); }
-.aia-md blockquote { margin: 9px 0; padding: 2px 0 2px 11px; color: var(--aia-text-muted); border-left: 3px solid var(--aia-border-strong); }
-.aia-md blockquote p:last-child { margin-bottom: 0; }
-.aia-md code, .aia-pre code, .aia-note code {
+.aia-scope .aia-md > :first-child { margin-top: 0; }
+.aia-scope .aia-md > :last-child { margin-bottom: 0; }
+.aia-scope .aia-md p { margin: 0 0 9px; }
+.aia-scope .aia-md h1, .aia-scope .aia-md h2, .aia-scope .aia-md h3, .aia-scope .aia-md h4, .aia-scope .aia-md h5, .aia-scope .aia-md h6 { margin: 14px 0 7px; font-weight: 650; line-height: 1.3; letter-spacing: normal; text-transform: none; }
+.aia-scope .aia-md h1 { font-size: 16.5px; }
+.aia-scope .aia-md h2 { font-size: 15px; padding-bottom: 4px; border-bottom: 1px solid var(--aia-border); }
+.aia-scope .aia-md h3 { font-size: 14px; }
+.aia-scope .aia-md h4, .aia-scope .aia-md h5, .aia-scope .aia-md h6 { font-size: 13px; color: var(--aia-text-muted); }
+.aia-scope .aia-md ul, .aia-scope .aia-md ol { margin: 0 0 9px; padding-left: 21px; }
+.aia-scope .aia-md ul { list-style: disc; }
+.aia-scope .aia-md ol { list-style: decimal; }
+.aia-scope .aia-md li { margin: 0 0 3px; }
+.aia-scope .aia-md li::marker { color: var(--aia-text-muted); }
+.aia-scope .aia-md li > ul, .aia-scope .aia-md li > ol { margin: 3px 0 0; }
+.aia-scope .aia-md strong { font-weight: 650; }
+.aia-scope .aia-md a { color: var(--aia-accent-strong); font-weight: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.aia-scope .aia-md a:hover { color: var(--aia-accent); }
+.aia-scope .aia-md del { color: var(--aia-text-faint); }
+.aia-scope .aia-md hr { margin: 12px 0; border: 0; border-top: 1px solid var(--aia-border); }
+.aia-scope .aia-md blockquote { margin: 9px 0; padding: 2px 0 2px 11px; color: var(--aia-text-muted); border-left: 3px solid var(--aia-border-strong); }
+.aia-scope .aia-md blockquote p:last-child { margin-bottom: 0; }
+.aia-scope .aia-md code, .aia-scope .aia-pre code, .aia-scope .aia-note code {
   font-family: var(--aia-mono);
   font-size: .87em;
   padding: .1em .34em;
   background: color-mix(in srgb, var(--aia-text) 9%, transparent);
   border-radius: 4px;
 }
-.aia-md-task {
+.aia-scope .aia-md-task {
   display: inline-block;
   width: 12px;
   height: 12px;
@@ -614,26 +694,24 @@ button.aia-tool-line:focus-visible { outline: none; box-shadow: var(--aia-ring);
   border: 1.5px solid var(--aia-border-strong);
   border-radius: 3px;
 }
-.aia-md-task.done { background: var(--aia-ok); border-color: var(--aia-ok); }
-.aia-md-task.done::after { content: ""; display: block; width: 3px; height: 6px; margin: 0 auto; border: solid #fff; border-width: 0 1.5px 1.5px 0; transform: translateY(-1px) rotate(45deg); }
+.aia-scope .aia-md-task.done { background: var(--aia-ok); border-color: var(--aia-ok); }
+.aia-scope .aia-md-task.done::after { content: ""; display: block; width: 3px; height: 6px; margin: 0 auto; border: solid #fff; border-width: 0 1.5px 1.5px 0; transform: translateY(-1px) rotate(45deg); }
 
-.aia-md-table-wrap { margin: 9px 0; overflow-x: auto; border: 1px solid var(--aia-border); border-radius: var(--aia-radius-sm); scrollbar-width: thin; }
-.aia-md-table { min-width: 100%; font-size: 12px; border-collapse: collapse; }
-.aia-md-table th, .aia-md-table td { padding: 5px 9px; border-bottom: 1px solid var(--aia-border); border-right: 1px solid var(--aia-border); vertical-align: top; }
-.aia-md-table th:last-child, .aia-md-table td:last-child { border-right: 0; }
-.aia-md-table tbody tr:last-child td { border-bottom: 0; }
-.aia-md-table th { font-size: 10.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--aia-text-muted); background: var(--aia-bg-elevated); white-space: nowrap; }
-.aia-md-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--aia-bg-elevated) 45%, transparent); }
-.aia-md-table code { padding: 0; background: none; }
+.aia-scope .aia-md-table-wrap { margin: 9px 0; overflow-x: auto; border: 1px solid var(--aia-border); border-radius: var(--aia-radius-sm); scrollbar-width: thin; }
+.aia-scope .aia-md-table { min-width: 100%; font-size: 12px; border-collapse: collapse; }
+.aia-scope .aia-md-table th, .aia-scope .aia-md-table td { padding: 5px 9px; border-bottom: 1px solid var(--aia-border); border-right: 1px solid var(--aia-border); vertical-align: top; }
+.aia-scope .aia-md-table th:last-child, .aia-scope .aia-md-table td:last-child { border-right: 0; }
+.aia-scope .aia-md-table tbody tr:last-child td { border-bottom: 0; }
+.aia-scope .aia-md-table th { font-size: 10.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--aia-text-muted); background: var(--aia-bg-elevated); white-space: nowrap; }
+.aia-scope .aia-md-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--aia-bg-elevated) 45%, transparent); }
+.aia-scope .aia-md-table code { padding: 0; background: none; }
 
-.aia-md-code { margin: 10px 0; overflow: hidden; background: var(--aia-code-bg); border: 1px solid var(--aia-border-strong); border-radius: var(--aia-radius-sm); }
-.aia-md-code-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 4px 10px; background: var(--aia-code-head); border-bottom: 1px solid rgba(255, 255, 255, .09); }
-.aia-md-code-lang { font-family: var(--aia-mono); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #8fa3bd; }
-.aia-md-code-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
-.aia-md-btn {
+.aia-scope .aia-md-code { margin: 10px 0; overflow: hidden; background: var(--aia-code-bg); border: 1px solid var(--aia-border-strong); border-radius: var(--aia-radius-sm); }
+.aia-scope .aia-md-code-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 4px 10px; background: var(--aia-code-head); border-bottom: 1px solid rgba(255, 255, 255, .09); }
+.aia-scope .aia-md-code-lang { font-family: var(--aia-mono); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #8fa3bd; }
+.aia-scope .aia-md-code-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.aia-scope .aia-md-btn {
   padding: 3px 8px;
-  font-size: 10.5px;
-  font-weight: 600;
   color: #cfd8e6;
   background: rgba(255, 255, 255, .08);
   border: 1px solid rgba(255, 255, 255, .14);
@@ -641,92 +719,102 @@ button.aia-tool-line:focus-visible { outline: none; box-shadow: var(--aia-ring);
   cursor: pointer;
   white-space: nowrap;
 }
-.aia-md-btn:hover { color: #fff; background: rgba(255, 255, 255, .16); }
-.aia-md-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(255, 255, 255, .3); }
-.aia-md-btn-accent { color: #bcd3ff; border-color: rgba(120, 165, 255, .45); background: rgba(91, 147, 255, .16); }
-.aia-md-btn.aia-done { color: #6ee7a8; border-color: rgba(110, 231, 168, .5); background: rgba(110, 231, 168, .14); }
-.aia-md-code-body { margin: 0; padding: 10px 12px; overflow-x: auto; font-family: var(--aia-mono); font-size: 11.8px; line-height: 1.55; color: var(--aia-code-text); white-space: pre; scrollbar-width: thin; }
-.aia-md-code-body code { padding: 0; font-size: inherit; color: inherit; background: none; }
+.aia-scope .aia-md-btn:hover { color: #fff; background: rgba(255, 255, 255, .16); }
+.aia-scope .aia-md-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(255, 255, 255, .3); }
+.aia-scope .aia-md-btn-accent { color: #bcd3ff; border-color: rgba(120, 165, 255, .45); background: rgba(91, 147, 255, .16); }
+.aia-scope .aia-md-btn.aia-done { color: #6ee7a8; border-color: rgba(110, 231, 168, .5); background: rgba(110, 231, 168, .14); }
+.aia-scope .aia-md-code-body { margin: 0; padding: 10px 12px; overflow-x: auto; font-family: var(--aia-mono); font-size: 11.8px; line-height: 1.55; color: var(--aia-code-text); background: none; white-space: pre; text-align: left; scrollbar-width: thin; }
+.aia-scope .aia-md-code-body code { padding: 0; font-size: inherit; color: inherit; background: none; }
 
 /* -------------------------------------------------------------- composer */
 
-.aia-composer {
+.aia-scope .aia-composer {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
   gap: 8px;
   flex: 0 0 auto;
+  margin: 0;
   padding: 11px 12px 12px;
   background: var(--aia-bg-elevated);
+  border: 0;
   border-top: 1px solid var(--aia-border);
 }
-.aia-composer textarea {
+.aia-scope .aia-composer textarea {
   flex: 1 1 0;
+  width: auto;
   min-width: 0;
+  height: auto;
   min-height: 40px;
   max-height: 180px;
+  margin: 0;
   padding: 9px 11px;
   font: inherit;
   font-size: 13.5px;
   line-height: 1.45;
+  text-align: left;
   color: var(--aia-text);
   background: var(--aia-bg);
   border: 1px solid var(--aia-border-strong);
   border-radius: var(--aia-radius-sm);
+  box-shadow: none;
   resize: none;
   overflow-y: auto;
 }
-.aia-composer textarea:focus { outline: none; border-color: var(--aia-accent); box-shadow: var(--aia-ring); }
-.aia-send, .aia-shot-btn { width: 42px; height: 40px; padding: 0; flex: 0 0 auto; }
-.aia-shot-btn { width: 38px; color: var(--aia-text-muted); }
-.aia-shot-btn:hover { color: var(--aia-text); }
-.aia-shot-btn svg { width: 18px; height: 18px; }
-.aia-attach { display: flex; flex-wrap: wrap; gap: 7px; flex: 1 0 100%; }
-.aia-attach-item { position: relative; display: inline-flex; }
-.aia-attach-item .aia-shot { max-height: 64px; }
-.aia-attach-remove { position: absolute; top: -6px; right: -6px; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; color: var(--aia-text); background: var(--aia-bg-elevated); border: 1px solid var(--aia-border-strong); border-radius: 50%; cursor: pointer; }
-.aia-attach-remove svg { width: 10px; height: 10px; }
-.aia-attach-remove:hover { color: var(--aia-danger); border-color: var(--aia-danger); }
-.aia-send svg { width: 18px; height: 18px; }
-.aia-send.aia-stop { background: var(--aia-bg-elevated); color: var(--aia-danger); border-color: color-mix(in srgb, var(--aia-danger) 45%, var(--aia-border)); }
-.aia-send.aia-stop:hover { background: var(--aia-danger-soft); filter: none; }
-.aia-reading .aia-send { opacity: .7; }
+.aia-scope .aia-composer textarea:focus { outline: none; border-color: var(--aia-accent); box-shadow: var(--aia-ring); }
+.aia-scope .aia-send, .aia-scope .aia-shot-btn { width: 42px; height: 40px; padding: 0; flex: 0 0 auto; }
+.aia-scope .aia-shot-btn { width: 38px; color: var(--aia-text-muted); }
+.aia-scope .aia-shot-btn:hover { color: var(--aia-text); }
+.aia-scope .aia-shot-btn svg { width: 18px; height: 18px; }
+.aia-scope .aia-attach { display: flex; flex-wrap: wrap; gap: 7px; flex: 1 0 100%; }
+.aia-scope .aia-attach-item { position: relative; display: inline-flex; }
+.aia-scope .aia-attach-item .aia-shot { max-height: 64px; }
+.aia-scope .aia-attach-remove { position: absolute; top: -6px; right: -6px; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; color: var(--aia-text); background: var(--aia-bg-elevated); border: 1px solid var(--aia-border-strong); border-radius: 50%; cursor: pointer; }
+.aia-scope .aia-attach-remove svg { width: 10px; height: 10px; }
+.aia-scope .aia-attach-remove:hover { color: var(--aia-danger); border-color: var(--aia-danger); }
+.aia-scope .aia-send svg { width: 18px; height: 18px; }
+.aia-scope .aia-send.aia-stop { background: var(--aia-bg-elevated); color: var(--aia-danger); border-color: color-mix(in srgb, var(--aia-danger) 45%, var(--aia-border)); }
+.aia-scope .aia-send.aia-stop:hover { background: var(--aia-danger-soft); filter: none; }
+.aia-scope .aia-reading .aia-send { opacity: .7; }
 
 /* The + button: a menu to attach an image or a file (left of the message field). */
-.aia-plus { position: relative; flex: 0 0 auto; }
-.aia-plus-btn { width: 38px; height: 40px; padding: 0; color: var(--aia-text-muted); }
-.aia-plus-btn:hover { color: var(--aia-text); }
-.aia-plus-btn svg { width: 19px; height: 19px; transition: transform .16s ease; }
-.aia-plus-btn[aria-expanded="true"] { color: var(--aia-accent-strong); background: var(--aia-accent-soft); border-color: color-mix(in srgb, var(--aia-accent) 40%, var(--aia-border)); }
-.aia-plus-btn[aria-expanded="true"] svg { transform: rotate(45deg); }
-.aia-attach-menu {
+.aia-scope .aia-plus { position: relative; flex: 0 0 auto; }
+.aia-scope .aia-plus-btn { width: 38px; height: 40px; padding: 0; color: var(--aia-text-muted); }
+.aia-scope .aia-plus-btn:hover { color: var(--aia-text); }
+.aia-scope .aia-plus-btn svg { width: 19px; height: 19px; transition: transform .16s ease; }
+.aia-scope .aia-plus-btn[aria-expanded="true"] { color: var(--aia-accent-strong); background: var(--aia-accent-soft); border-color: color-mix(in srgb, var(--aia-accent) 40%, var(--aia-border)); }
+.aia-scope .aia-plus-btn[aria-expanded="true"] svg { transform: rotate(45deg); }
+.aia-scope .aia-attach-menu {
   position: absolute;
   left: 0;
   bottom: calc(100% + 6px);
   z-index: 4;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   gap: 2px;
   width: max-content;
   max-width: min(320px, calc(var(--aia-drawer-width) - 32px), calc(100vw - 32px));
+  margin: 0;
   padding: 5px;
+  text-align: left;
   background: var(--aia-bg-elevated);
   border: 1px solid var(--aia-border-strong);
   border-radius: var(--aia-radius);
   box-shadow: var(--aia-shadow);
   animation: aia-rise .14s ease-out;
 }
-.aia-menu-item { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 8px 10px; text-align: left; color: var(--aia-text); background: transparent; border: 0; border-radius: var(--aia-radius-sm); cursor: pointer; }
-.aia-menu-item:hover:not(:disabled), .aia-menu-item:focus-visible { background: var(--aia-bg-hover); outline: none; }
-.aia-menu-item:focus-visible { box-shadow: var(--aia-ring); }
-.aia-menu-item:disabled { cursor: not-allowed; }
-.aia-menu-item:disabled b, .aia-menu-item:disabled svg { opacity: .5; }
-.aia-menu-item svg { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 1px; color: var(--aia-accent); }
-.aia-menu-item b { display: block; font-size: 13px; font-weight: 600; }
-.aia-menu-item small { display: block; margin-top: 1px; font-size: 11px; line-height: 1.35; color: var(--aia-text-muted); }
+.aia-scope .aia-menu-item { display: flex; align-items: flex-start; justify-content: flex-start; gap: 10px; width: 100%; padding: 8px 10px; text-align: left; color: var(--aia-text); background: transparent; border: 0; border-radius: var(--aia-radius-sm); cursor: pointer; }
+.aia-scope .aia-menu-item:hover:not(:disabled), .aia-scope .aia-menu-item:focus-visible { background: var(--aia-bg-hover); outline: none; }
+.aia-scope .aia-menu-item:focus-visible { box-shadow: var(--aia-ring); }
+.aia-scope .aia-menu-item:disabled { cursor: not-allowed; }
+.aia-scope .aia-menu-item:disabled b, .aia-scope .aia-menu-item:disabled svg { opacity: .5; }
+.aia-scope .aia-menu-item svg { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 1px; color: var(--aia-accent); }
+.aia-scope .aia-menu-item b { display: block; font-size: 13px; font-weight: 600; }
+.aia-scope .aia-menu-item small { display: block; margin-top: 1px; font-size: 11px; line-height: 1.35; color: var(--aia-text-muted); }
 
 /* Attached files: chips in the composer and on the question (click: the text the agent received). */
-.aia-file {
+.aia-scope .aia-file {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -740,39 +828,39 @@ button.aia-tool-line:focus-visible { outline: none; box-shadow: var(--aia-ring);
   border: 1px solid var(--aia-border-strong);
   border-radius: var(--aia-radius-sm);
 }
-button.aia-file { cursor: pointer; }
-button.aia-file:hover { border-color: var(--aia-accent); }
-button.aia-file:focus-visible { outline: none; box-shadow: var(--aia-ring); }
-.aia-file svg { width: 18px; height: 18px; flex: 0 0 auto; color: var(--aia-accent); }
-.aia-file-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
-.aia-file-name { overflow: hidden; font-size: 12px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
-.aia-file-meta { overflow: hidden; font-size: 10.5px; color: var(--aia-text-muted); white-space: nowrap; text-overflow: ellipsis; }
-.aia-file-cut .aia-file-meta { color: var(--aia-warn); }
-.aia-file-reading svg { animation: aia-pulse 1.1s ease-in-out infinite; }
-.aia-files { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 5px; max-width: 94%; }
-.aia-shot-reading { display: grid; place-items: center; width: 64px; height: 48px; color: var(--aia-text-faint); cursor: default; }
-.aia-shot-reading svg { width: 20px; height: 20px; animation: aia-pulse 1.1s ease-in-out infinite; }
+.aia-scope button.aia-file { cursor: pointer; }
+.aia-scope button.aia-file:hover { border-color: var(--aia-accent); }
+.aia-scope button.aia-file:focus-visible { outline: none; box-shadow: var(--aia-ring); }
+.aia-scope .aia-file svg { width: 18px; height: 18px; flex: 0 0 auto; color: var(--aia-accent); }
+.aia-scope .aia-file-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.aia-scope .aia-file-name { overflow: hidden; font-size: 12px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.aia-scope .aia-file-meta { overflow: hidden; font-size: 10.5px; color: var(--aia-text-muted); white-space: nowrap; text-overflow: ellipsis; }
+.aia-scope .aia-file-cut .aia-file-meta { color: var(--aia-warn); }
+.aia-scope .aia-file-reading svg { animation: aia-pulse 1.1s ease-in-out infinite; }
+.aia-scope .aia-files { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 5px; max-width: 94%; }
+.aia-scope .aia-shot-reading { display: grid; place-items: center; width: 64px; height: 48px; color: var(--aia-text-faint); cursor: default; }
+.aia-scope .aia-shot-reading svg { width: 20px; height: 20px; animation: aia-pulse 1.1s ease-in-out infinite; }
 
 /* Drag and drop onto the drawer. */
-.aia-drop { position: absolute; inset: 0; z-index: 5; display: flex; padding: 14px; background: color-mix(in srgb, var(--aia-bg) 86%, transparent); pointer-events: none; }
-.aia-drop > div { display: flex; flex: 1 1 auto; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 20px; text-align: center; color: var(--aia-accent-strong); border: 2px dashed var(--aia-accent); border-radius: var(--aia-radius); }
-.aia-drop svg { width: 30px; height: 30px; }
-.aia-drop p { font-size: 14.5px; font-weight: 650; }
-.aia-drop small { max-width: 260px; font-size: 11.5px; color: var(--aia-text-muted); }
+.aia-scope .aia-drop { position: absolute; inset: 0; z-index: 5; display: flex; padding: 14px; background: color-mix(in srgb, var(--aia-bg) 86%, transparent); pointer-events: none; }
+.aia-scope .aia-drop > div { display: flex; flex: 1 1 auto; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 20px; text-align: center; color: var(--aia-accent-strong); border: 2px dashed var(--aia-accent); border-radius: var(--aia-radius); }
+.aia-scope .aia-drop svg { width: 30px; height: 30px; }
+.aia-scope .aia-drop p { margin: 0; font-size: 14.5px; font-weight: 650; }
+.aia-scope .aia-drop small { max-width: 260px; font-size: 11.5px; color: var(--aia-text-muted); }
 
 /* The text of an attached file, as the agent received it. */
-.aia-file-view { position: absolute; inset: 0; z-index: 3; display: flex; padding: 12px; background: color-mix(in srgb, var(--aia-bg) 92%, transparent); }
-.aia-file-view-card { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--aia-bg-elevated); border: 1px solid var(--aia-border-strong); border-radius: var(--aia-radius); box-shadow: var(--aia-shadow); }
-.aia-file-view-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px 10px 9px 13px; border-bottom: 1px solid var(--aia-border); }
-.aia-file-view-head h3 { font-size: 13.5px; font-weight: 650; overflow-wrap: anywhere; }
-.aia-file-view-head p { margin-top: 2px; font-size: 11px; color: var(--aia-text-muted); }
-.aia-file-view-note { margin: 9px 13px 0; font-size: 11.5px; color: var(--aia-warn); }
-.aia-file-view pre { flex: 1 1 auto; min-height: 0; margin: 0; padding: 10px 13px 14px; overflow: auto; font-family: var(--aia-mono); font-size: 11.5px; line-height: 1.5; color: var(--aia-text); white-space: pre-wrap; overflow-wrap: anywhere; }
-.aia-file-view pre:focus-visible { outline: none; box-shadow: inset var(--aia-ring); }
+.aia-scope .aia-file-view { position: absolute; inset: 0; z-index: 3; display: flex; padding: 12px; background: color-mix(in srgb, var(--aia-bg) 92%, transparent); }
+.aia-scope .aia-file-view-card { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--aia-bg-elevated); border: 1px solid var(--aia-border-strong); border-radius: var(--aia-radius); box-shadow: var(--aia-shadow); }
+.aia-scope .aia-file-view-head { display: flex; align-items: flex-start; justify-content: space-between; flex-shrink: 0; gap: 10px; padding: 10px 10px 9px 13px; border-bottom: 1px solid var(--aia-border); }
+.aia-scope .aia-file-view-head h3 { margin: 0; font-size: 13.5px; font-weight: 650; letter-spacing: normal; text-transform: none; overflow-wrap: anywhere; }
+.aia-scope .aia-file-view-head p { margin: 2px 0 0; font-size: 11px; color: var(--aia-text-muted); }
+.aia-scope .aia-file-view-note { flex-shrink: 0; margin: 9px 13px 0; font-size: 11.5px; color: var(--aia-warn); }
+.aia-scope .aia-file-view pre { flex: 1 1 auto; min-height: 0; margin: 0; padding: 10px 13px 14px; overflow: auto; font-family: var(--aia-mono); font-size: 11.5px; line-height: 1.5; color: var(--aia-text); background: none; white-space: pre-wrap; overflow-wrap: anywhere; }
+.aia-scope .aia-file-view pre:focus-visible { outline: none; box-shadow: inset var(--aia-ring); }
 
 /* -------------------------------------------------------------- launcher */
 
-.aia-launcher {
+.aia-scope.aia-launcher {
   position: fixed;
   right: 22px;
   bottom: 22px;
@@ -781,19 +869,21 @@ button.aia-file:focus-visible { outline: none; box-shadow: var(--aia-ring); }
   place-items: center;
   width: 52px;
   height: 52px;
+  margin: 0;
   padding: 0;
   color: var(--aia-on-accent);
   background: linear-gradient(140deg, var(--aia-accent), var(--aia-accent-strong));
   border: 0;
   border-radius: 50%;
   box-shadow: var(--aia-shadow);
+  transform: none;
   cursor: pointer;
   transition: transform .18s, opacity .18s;
 }
-.aia-launcher svg { width: 24px; height: 24px; }
-.aia-launcher:hover { transform: translateY(-2px); }
-.aia-launcher:focus-visible { outline: none; box-shadow: var(--aia-ring), var(--aia-shadow); }
-html.aia-drawer-open .aia-launcher { opacity: 0; pointer-events: none; transform: scale(.8); }
+.aia-scope.aia-launcher svg { width: 24px; height: 24px; }
+.aia-scope.aia-launcher:hover { transform: translateY(-2px); }
+.aia-scope.aia-launcher:focus-visible { outline: none; box-shadow: var(--aia-ring), var(--aia-shadow); }
+html.aia-drawer-open .aia-scope.aia-launcher { opacity: 0; pointer-events: none; transform: scale(.8); }
 
 /* Context-state dot on any toggle the agent is attached to (disable with toggleBadge: false). Toggles are host
    elements, so the dot reads --aia-badge-* from the toggle or any ancestor (e.g. :root), with these fallbacks. Give a
@@ -810,13 +900,13 @@ html.aia-drawer-open .aia-launcher { opacity: 0; pointer-events: none; transform
   pointer-events: none;
   box-shadow: 0 0 0 2px var(--aia-badge-ring, #fff);
 }
-.aia-launcher[data-aia-context]::after { top: var(--aia-badge-top, 6px); right: var(--aia-badge-right, 6px); width: var(--aia-badge-size, 10px); height: var(--aia-badge-size, 10px); }
+.aia-scope.aia-launcher[data-aia-context]::after { top: var(--aia-badge-top, 6px); right: var(--aia-badge-right, 6px); width: var(--aia-badge-size, 10px); height: var(--aia-badge-size, 10px); }
 [data-aia-toggle][data-aia-context="synced"]::after { background: var(--aia-badge-synced, #148f5b); }
 [data-aia-toggle][data-aia-context="dirty"]::after { background: var(--aia-badge-dirty, #d68a00); }
 [data-aia-toggle][data-aia-context="unread"]::after { background: var(--aia-badge-unread, #2f6fed); }
 [data-aia-toggle][data-aia-context="none"]::after,
 [data-aia-toggle][data-aia-context="off"]::after { display: none; }
-.aia-launcher-dot { display: none; }
+.aia-scope .aia-launcher-dot { display: none; }
 
 /* Host <dialog>s docked beside the open drawer (the `dialogs: 'dock'` option): non-modal while the drawer is open,
    centred in the space left of it. Only applied while docked; restyle with your own .aia-docked-dialog rules. */
@@ -836,41 +926,82 @@ dialog.aia-docked-dialog.aia-docked-dialog {
 
 /* ================================================================== modal */
 
+/* The settings dialog's layout — keep it in step with references/settings-layout.md; scripts/verify.mjs (settings)
+   and tests/browser.test.mjs check it on every tab, under a hostile host stylesheet too.
+   - Header: icon, title and subtitle at the left; the close button at the right. Never shrinks.
+   - Tab strip: directly under the header, left-aligned, always fully visible. Fixed order: Model, Agent, Tools,
+     Memory, Vision, Context; hidden tabs collapse with no gap. The active tab has a border and the accent text
+     colour. Never shrinks, never scrolls vertically.
+   - Body: the only part that scrolls. A vertical stack of full-width section cards (.aia-section), 12px apart, each
+     with ~13-14px padding.
+   - Alignment: everything inside a card is left-aligned. Nothing is centred except the glyphs inside buttons.
+   - Field (.aia-field): a small uppercase muted label (.aia-label) on its own line at the card's top-left (an
+     optional soft-case suffix such as "(optional)", .aia-label-soft); the control below it, the full card width.
+   - Input + action button (.aia-row: Server address + Default, Model + Load models, API key + Show): the input fills
+     the remaining width; the button keeps its natural width, sits flush right and matches the input height; 7px gap.
+   - Paired fields (.aia-grid: Temperature / Max reply tokens, Thinking / Conversation memory): two columns, one
+     column on narrow cards.
+   - Help text (.aia-note): left-aligned, muted, ~11.5px, directly under the control it explains, full width.
+   - Checkbox row (.aia-check): the box at the far left, the text right after it (8px gap), wrapped lines aligned
+     under the text.
+   - Section header with actions (.aia-label-row: System prompt + Restore app default; "Tools · 13 of 14 on" +
+     Reading tools on / All on / All off): the title left, the buttons right on the same line, wrapping below when
+     narrow.
+   - Buttons and inputs: only the runtime's styles (font, radius, border, background, padding).
+   - Footer: status text left; Restore defaults and Save right-aligned. Never shrinks. */
+
 html.aia-modal-open { overflow: hidden; }
 
-.aia-modal {
+.aia-scope.aia-modal {
   position: fixed;
   inset: 0;
   z-index: calc(var(--aia-z) + 1);
   display: grid;
   place-items: center;
+  margin: 0;
   padding: 20px;
+  border: 0;
+  background: none;
 }
-.aia-modal-scrim { position: absolute; inset: 0; background: rgba(9, 15, 24, .52); backdrop-filter: blur(2px); animation: aia-fade .16s ease-out; }
-.aia-modal-card {
+.aia-scope .aia-modal-scrim { position: absolute; inset: 0; margin: 0; background: rgba(9, 15, 24, .52); backdrop-filter: blur(2px); animation: aia-fade .16s ease-out; }
+.aia-scope .aia-modal-card {
   position: relative;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   width: min(640px, 100%);
   max-height: min(90vh, 860px);
+  margin: 0;
+  padding: 0;
   overflow: hidden;
+  text-align: left;
   background: var(--aia-bg-elevated);
   border: 1px solid var(--aia-border);
   border-radius: var(--aia-radius);
   box-shadow: var(--aia-shadow);
   animation: aia-rise .18s cubic-bezier(.22, .61, .36, 1);
 }
-.aia-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: var(--aia-bg-subtle); border-bottom: 1px solid var(--aia-border); }
-.aia-modal-title { display: flex; align-items: center; gap: 11px; min-width: 0; }
-.aia-modal-title h2 { font-size: 15px; font-weight: 650; }
-.aia-modal-title p { font-size: 11.5px; color: var(--aia-text-muted); }
 
-.aia-tabs { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; padding: 8px 12px 0; background: var(--aia-bg-elevated); border-bottom: 1px solid var(--aia-border); }
-.aia-tab {
-  margin-bottom: -1px;
+/* aia-guard: pinned-chrome
+   The card is a flex column: header, tab strip, body, footer. Only the body may give up height. .aia-tabs scrolls
+   sideways, so its automatic min-height is 0: without this block a tall tab (Tools, Memory, Context) took height from
+   the tab strip as well as from the body and clipped the tabs behind it. scripts/detect.mjs checks it. */
+.aia-scope .aia-modal-head, .aia-scope .aia-tabs, .aia-scope .aia-modal-foot { flex-shrink: 0; }
+.aia-scope .aia-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+/* end aia-guard: pinned-chrome */
+
+.aia-scope .aia-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0; padding: 12px 14px; color: var(--aia-text); text-align: left; background: var(--aia-bg-subtle); border: 0; border-bottom: 1px solid var(--aia-border); }
+.aia-scope .aia-modal-title { display: flex; align-items: center; justify-content: flex-start; gap: 11px; min-width: 0; }
+.aia-scope .aia-modal-title h2 { margin: 0; font-size: 15px; font-weight: 650; line-height: 1.5; letter-spacing: normal; text-transform: none; }
+.aia-scope .aia-modal-title p { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--aia-text-muted); }
+
+.aia-scope .aia-tabs { display: flex; flex-wrap: nowrap; align-items: stretch; justify-content: flex-start; gap: 4px; margin: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; padding: 8px 12px 0; background: var(--aia-bg-elevated); border: 0; border-bottom: 1px solid var(--aia-border); }
+.aia-scope .aia-tab {
+  flex: 0 0 auto;
+  margin: 0 0 -1px;
   padding: 7px 14px;
-  font-size: 12.5px;
-  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
   color: var(--aia-text-muted);
   background: transparent;
   border: 1px solid transparent;
@@ -878,49 +1009,59 @@ html.aia-modal-open { overflow: hidden; }
   border-radius: var(--aia-radius-sm) var(--aia-radius-sm) 0 0;
   cursor: pointer;
 }
-.aia-tab:hover { color: var(--aia-text); }
-.aia-tab[aria-selected="true"] { color: var(--aia-accent-strong); background: var(--aia-bg-elevated); border-color: var(--aia-border); border-bottom: 1px solid var(--aia-bg-elevated); }
-.aia-tab:focus-visible { outline: none; box-shadow: var(--aia-ring); }
+.aia-scope .aia-tab:hover { color: var(--aia-text); }
+.aia-scope .aia-tab[aria-selected="true"] { color: var(--aia-accent-strong); background: var(--aia-bg-elevated); border-color: var(--aia-border); border-bottom: 1px solid var(--aia-bg-elevated); }
+.aia-scope .aia-tab:focus-visible { outline: none; box-shadow: var(--aia-ring); }
 
-.aia-modal-body { flex: 1 1 auto; overflow-y: auto; padding: 14px; scrollbar-width: thin; }
-.aia-panel { display: flex; flex-direction: column; gap: 12px; }
-.aia-section { display: flex; flex-direction: column; gap: 10px; padding: 13px 14px; background: var(--aia-bg); border: 1px solid var(--aia-border); border-radius: var(--aia-radius); }
-.aia-section > summary { font-size: 12px; font-weight: 650; color: var(--aia-text-muted); cursor: pointer; }
-.aia-advanced-body { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
-.aia-h3 { font-size: 12px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--aia-text-muted); }
-.aia-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.aia-scope .aia-modal-body { margin: 0; padding: 14px; text-align: left; scrollbar-width: thin; }
+.aia-scope .aia-panel { display: flex; flex-direction: column; align-items: stretch; gap: 12px; width: auto; max-width: none; margin: 0; padding: 0; border: 0; background: none; }
+.aia-scope .aia-section { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 10px; margin: 0; padding: 13px 14px; text-align: left; color: var(--aia-text); background: var(--aia-bg); border: 1px solid var(--aia-border); border-radius: var(--aia-radius); }
+.aia-scope .aia-section > summary { margin: 0; padding: 0; font-size: 12px; font-weight: 650; text-align: left; color: var(--aia-text-muted); background: none; cursor: pointer; }
+.aia-scope .aia-advanced-body { display: flex; flex-direction: column; align-items: stretch; gap: 12px; margin-top: 4px; }
+.aia-scope .aia-h3 { margin: 0; font-size: 12px; font-weight: 650; line-height: 1.5; letter-spacing: .05em; text-transform: uppercase; text-align: left; color: var(--aia-text-muted); }
+.aia-scope .aia-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
 
-.aia-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.aia-label, .aia-label-row > .aia-label { font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--aia-text-muted); }
-.aia-label-soft { font-weight: 500; text-transform: none; letter-spacing: 0; }
-.aia-label-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.aia-row { display: flex; gap: 7px; align-items: stretch; }
-.aia-row-center { align-items: center; flex-wrap: wrap; }
-.aia-row > input, .aia-row > select { flex: 1 1 auto; min-width: 0; }
+.aia-scope .aia-field { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 5px; min-width: 0; margin: 0; padding: 0; font: inherit; color: var(--aia-text); text-align: left; }
+.aia-scope .aia-label, .aia-scope .aia-label-row > .aia-label { display: block; margin: 0; padding: 0; font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; text-align: left; color: var(--aia-text-muted); }
+.aia-scope .aia-label-soft { font-weight: 500; text-transform: none; letter-spacing: 0; }
+.aia-scope .aia-label-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; margin: 0; text-align: left; }
+.aia-scope .aia-row { display: flex; flex-wrap: nowrap; gap: 7px; align-items: stretch; justify-content: flex-start; margin: 0; padding: 0; }
+.aia-scope .aia-row-center { align-items: center; flex-wrap: wrap; }
+.aia-scope .aia-label-row > .aia-row { flex-wrap: wrap; }
+.aia-scope .aia-row > input, .aia-scope .aia-row > select { flex: 1 1 auto; min-width: 0; }
+.aia-scope .aia-row > .aia-btn { flex: 0 0 auto; }
 
-.aia-scope input[type="text"], .aia-scope input[type="url"], .aia-scope input[type="password"], .aia-scope input[type="number"],
-.aia-scope select, .aia-modal textarea {
+.aia-scope :is(input[type="text"], input[type="url"], input[type="password"], input[type="number"], select),
+.aia-scope.aia-modal textarea {
   width: 100%;
+  min-width: 0;
+  height: auto;
+  margin: 0;
   padding: 7px 10px;
   font: inherit;
   font-size: 13.5px;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
   color: var(--aia-text);
   background: var(--aia-bg-elevated);
   border: 1px solid var(--aia-border-strong);
   border-radius: var(--aia-radius-sm);
+  box-shadow: none;
   transition: border-color .14s, box-shadow .14s;
 }
-.aia-modal textarea { font-family: var(--aia-mono); font-size: 12.5px; line-height: 1.5; resize: vertical; min-height: 180px; }
-.aia-scope input:focus, .aia-scope select:focus, .aia-modal textarea:focus { outline: none; border-color: var(--aia-accent); box-shadow: var(--aia-ring); }
-.aia-check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--aia-text); cursor: pointer; }
-.aia-check input { margin: 3px 0 0; width: 15px; height: 15px; flex: 0 0 auto; accent-color: var(--aia-accent); }
+.aia-scope.aia-modal textarea { font-family: var(--aia-mono); font-size: 12.5px; line-height: 1.5; resize: vertical; min-height: 180px; }
+.aia-scope input:focus, .aia-scope select:focus, .aia-scope.aia-modal textarea:focus { outline: none; border-color: var(--aia-accent); box-shadow: var(--aia-ring); }
+.aia-scope .aia-check { display: flex; flex-direction: row; align-items: flex-start; justify-content: flex-start; gap: 8px; margin: 0; padding: 0; font: inherit; font-size: 13px; text-align: left; color: var(--aia-text); cursor: pointer; }
+.aia-scope .aia-check input { margin: 3px 0 0; width: 15px; height: 15px; flex: 0 0 auto; accent-color: var(--aia-accent); }
+.aia-scope .aia-check > span { flex: 1 1 auto; min-width: 0; }
 
-.aia-note { font-size: 11.5px; line-height: 1.5; color: var(--aia-text-muted); }
-.aia-note a { color: var(--aia-accent-strong); }
-.aia-transmit.aia-warn { padding: 7px 10px; color: var(--aia-text); background: var(--aia-warn-soft); border: 1px solid color-mix(in srgb, var(--aia-warn) 34%, var(--aia-border)); border-left: 3px solid var(--aia-warn); border-radius: var(--aia-radius-sm); }
-.aia-test-result { flex: 1 1 200px; font-size: 12px; color: var(--aia-text-muted); overflow-wrap: anywhere; }
+.aia-scope .aia-note { display: block; margin: 0; padding: 0; font-size: 11.5px; line-height: 1.5; text-align: left; color: var(--aia-text-muted); }
+.aia-scope .aia-note a { color: var(--aia-accent-strong); font-weight: inherit; text-decoration: underline; }
+.aia-scope .aia-transmit.aia-warn { padding: 7px 10px; color: var(--aia-text); background: var(--aia-warn-soft); border: 1px solid color-mix(in srgb, var(--aia-warn) 34%, var(--aia-border)); border-left: 3px solid var(--aia-warn); border-radius: var(--aia-radius-sm); }
+.aia-scope .aia-test-result { flex: 1 1 200px; font-size: 12px; text-align: left; color: var(--aia-text-muted); overflow-wrap: anywhere; }
 
-.aia-pre {
+.aia-scope .aia-pre {
   margin: 0;
   max-height: 180px;
   overflow: auto;
@@ -928,6 +1069,7 @@ html.aia-modal-open { overflow: hidden; }
   font-family: var(--aia-mono);
   font-size: 11.5px;
   line-height: 1.5;
+  text-align: left;
   color: var(--aia-text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -935,13 +1077,13 @@ html.aia-modal-open { overflow: hidden; }
   border: 1px solid var(--aia-border);
   border-radius: var(--aia-radius-sm);
 }
-.aia-pre-tall { max-height: 340px; }
-.aia-ctx-line { display: flex; align-items: center; gap: 9px; font-size: 13px; }
+.aia-scope .aia-pre-tall { max-height: 340px; }
+.aia-scope .aia-ctx-line { display: flex; align-items: center; gap: 9px; font-size: 13px; }
 
-.aia-modal-foot { display: flex; align-items: center; gap: 9px; padding: 11px 14px; background: var(--aia-bg-subtle); border-top: 1px solid var(--aia-border); }
-.aia-status { flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--aia-text-muted); overflow-wrap: anywhere; }
-.aia-ok { color: var(--aia-ok) !important; }
-.aia-error.aia-status, .aia-test-result.aia-error { color: var(--aia-danger); }
+.aia-scope .aia-modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin: 0; padding: 11px 14px; color: var(--aia-text); text-align: left; background: var(--aia-bg-subtle); border: 0; border-top: 1px solid var(--aia-border); }
+.aia-scope .aia-status { flex: 1 1 auto; min-width: 0; font-size: 11.5px; text-align: left; color: var(--aia-text-muted); overflow-wrap: anywhere; }
+.aia-scope .aia-ok { color: var(--aia-ok) !important; }
+.aia-scope .aia-error.aia-status, .aia-scope .aia-test-result.aia-error { color: var(--aia-danger); }
 
 /* ------------------------------------------------------------ animations */
 
@@ -951,18 +1093,18 @@ html.aia-modal-open { overflow: hidden; }
 @keyframes aia-dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .aia-drawer, .aia-drawer.aia-open, .aia-pushed.aia-pushed, .aia-launcher { transition: none; }
-  .aia-modal-scrim, .aia-modal-card { animation: none; }
-  .aia-tool-caret { transition: none; }
-  .aia-plus-btn svg { transition: none; }
-  .aia-attach-menu { animation: none; }
+  .aia-scope.aia-drawer, .aia-scope.aia-drawer.aia-open, .aia-pushed.aia-pushed, .aia-scope.aia-launcher { transition: none; }
+  .aia-scope .aia-modal-scrim, .aia-scope .aia-modal-card { animation: none; }
+  .aia-scope .aia-tool-caret { transition: none; }
+  .aia-scope .aia-plus-btn svg { transition: none; }
+  .aia-scope .aia-attach-menu { animation: none; }
 }
 
 /* --------------------------------------------------------------- narrow */
 
 @media (max-width: 900px) {
   html.aia-drawer-open { --aia-push-width: 0px; }
-  .aia-drawer { width: 100vw; }
+  .aia-scope.aia-drawer { width: 100vw; }
   .aia-pushed.aia-pushed { padding-right: 0 !important; }
-  .aia-resizer { display: none; }
+  .aia-scope .aia-resizer { display: none; }
 }

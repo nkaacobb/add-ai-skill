@@ -23,7 +23,7 @@ host app ──hooks──▶ ContextManager ──snapshot/hash──▶ conver
 | File | Responsibility | DOM? |
 | --- | --- | --- |
 | `ai-agent.js` | `createAiAgent()` wires everything and returns the public API; `fromDom()` helper. | yes |
-| `ai-agent.css` | All styling, scoped under `.aia-scope`, themable with `--aia-*` variables, light/dark. | – |
+| `ai-agent.css` | All styling, scoped under `.aia-scope`, themable with `--aia-*` variables, light/dark. Two layout guards: `aia-guard: host-isolation` (the page's element CSS does not reach the agent's UI) and `aia-guard: pinned-chrome` (the settings dialog's header, tabs and footer never shrink); every other rule is `.aia-scope .aia-x` and states what it depends on (`settings-layout.md`). | – |
 | `core/context.js` | App/page/content/view hooks → text; snapshot + fingerprint; truncation. | no |
 | `core/conversation.js` | The sync protocol: `planTurn`, `contextState`, `buildRequestMessages`, snapshot block format. | no |
 | `core/hash.js` | `hashText` (cyrb53, 53-bit), `stableStringify` (sorted keys). | no |
@@ -54,7 +54,7 @@ host app ──hooks──▶ ContextManager ──snapshot/hash──▶ conver
 | `ui/settings-panel.js` | The modal: Model / Agent (with the active agent and its skills) / Tools (with permission badges) / Memory / Vision / Context tabs, draft + save, load models, test connection. | yes |
 | `ui/markdown.js` | Escape-first Markdown renderer with code-block actions. | no (string in/out) |
 | `ui/dialogs.js` | `dialogs: 'dock'`: native modal dialogs shown non-modally beside the open drawer, switch events swallowed. | yes |
-| `ui/layout-check.js` | Dev-time check that the pushed layout fits beside the drawer (`devWarnings`). | yes |
+| `ui/layout-check.js` | Dev-time checks (`devWarnings`): the pushed layout fits beside the drawer; the settings dialog's computed styles match its layout spec (host CSS leaking in). Never change the page. | yes |
 | `ui/resize.js`, `ui/dom.js`, `ui/icons.js` | Resize handle, DOM helpers (debounce with max wait, key isolation, `setControlValue`), inline SVG icons. | yes |
 
 Outside the runtime:
@@ -67,9 +67,10 @@ Outside the runtime:
 | `scripts/scaffold.mjs` | Creates a tool, toolset, skill or agent from `assets/templates/` and registers it; never overwrites. |
 | `scripts/workspace.mjs` | The development workspace server (static site + relay + `/ai-workspace`): read the app's source, write in its capability folder. Never deployed. |
 | `scripts/release-hashes.mjs`, `scripts/release-hashes.json` | Fingerprints of every released runtime and relay, so `detect.mjs` can tell unchanged copies from edited ones. |
-| `scripts/verify.mjs` | Drives headless Edge/Chrome through an integration and reports pass/fail per check. |
+| `scripts/verify.mjs` | Drives headless Edge/Chrome through an integration and reports pass/fail per check, including every Settings tab against its layout spec (`scripts/lib/settings-layout.mjs`, shared with the browser tests). |
+| `scripts/guards.mjs`, `scripts/lib/css-guards.mjs` | The layout guards of an app's runtime stylesheet: a small CSS reader (rules, specificity, the winning declaration) that `detect.mjs` uses for `layoutGuards` and the host's element rules; `--apply` adds missing guard blocks to an edited copy in place. |
 | `scripts/lib/cdp.mjs` | Zero-dependency DevTools-protocol driver (Node 22+ global WebSocket), shared by `verify.mjs` and the browser tests. |
-| `tests/` | `runtime` (pure modules), `framework` (frontmatter, schema, permissions, skills, agents, the capability index, the workspace client), `files` (attachment readers), `relay` (both relays + fake upstream), `browser` (real browser: keys, dialogs, tools, memory, screenshots, attachments), `framework-browser` (agents, skills, permissions, in-app authoring end to end), `workspace` (the dev server's rules), `lifecycle` (scaffold, validate), `example` (Hello World), `detect`. |
+| `tests/` | `runtime` (pure modules), `framework` (frontmatter, schema, permissions, skills, agents, the capability index, the workspace client), `files` (attachment readers), `relay` (both relays + fake upstream), `browser` (real browser: keys, dialogs, tools, memory, screenshots, attachments), `framework-browser` (agents, skills, permissions, in-app authoring end to end), `workspace` (the dev server's rules), `lifecycle` (scaffold, validate), `example` (Hello World), `detect`, `guards`. `fixtures/hostile-host/`: a page whose stylesheet styles bare elements (the settings-layout regression, also for `verify.mjs`). |
 
 Everything under `core/` and `adapters/` is DOM-free, which is why the Node relay can import it and the unit tests can
 run without a browser. What needs a browser (`ui/`) is covered by `tests/browser.test.mjs`.
@@ -135,4 +136,5 @@ the first real integration (1.1), the max-wait debounce, key isolation, dialog d
 probe, production relays and the verification tooling; tools (1.2); memory and screenshots for vision models (1.3);
 attachments — images and files from the + button, read in the browser without dependencies (1.5); and, as AI
 Enablement (skill 2.0, runtime 1.6), the capability folder with MCP-compatible tools and toolsets, Agent Skills,
-agents, permissions, and in-app tool authoring through the development workspace.
+agents, permissions, and in-app tool authoring through the development workspace; then (runtime 1.6.1) the layout
+guards that keep the settings dialog whole and the host page's element CSS out of the agent's UI.

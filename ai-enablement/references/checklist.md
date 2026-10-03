@@ -9,8 +9,9 @@ node <skill>/scripts/verify.mjs http://127.0.0.1:8080/ --change "<js that change
 Drives headless Edge/Chrome (Node 22+, nothing to install): console errors on load, the hotkey and the flag, the
 toggle, typing a space in the composer, Settings > Context size, the tool catalog, the starting memories, one
 screenshot taken the way the camera button takes it, the + menu and one attached text file, the pushed layout at
-1280/1366/1600 px (with screenshots in
-`.verify/`), and — with a model running — "Read the page" → synced → change → dirty → re-read →
+1280/1366/1600 px, every Settings tab at 1920×1080 and 1280×600 against its layout spec (`settings-layout.md`; a
+failure names the host CSS rule behind it) — with screenshots in `.verify/` — and, with a model running, "Read the
+page" → synced → change → dirty → re-read →
 "Page unchanged". `--no-llm` skips the questions; `--toggle`, `--agent`, `--widths`, `--question` adjust it; `--help`
 lists everything. Exit code 1 when a check fails. It does not replace looking at the page yourself.
 
@@ -26,7 +27,9 @@ lists everything. Exit code 1 when a check fails. It does not replace looking at
       toolsets and no problems; with two or more agents the title is a picker and switching starts a new chat; a skill
       loads when its kind of work is asked for (a *Use skill* row) and with `/name`; permission badges in
       Settings > Tools match the plan (a `deny` tool is *blocked*); development-time folders (`.claude/` …) untouched.
-- [ ] `ai-agent/` copied unchanged; `ai-agent.css` loaded once; the agent created once, client-side.
+- [ ] `ai-agent/` copied unchanged; `ai-agent.css` loaded once; the agent created once, client-side. Detect's
+      `Layout guards` line says pinned chrome: yes · host isolation: yes (an edited copy got them with
+      `scripts/guards.mjs --apply`, recorded under `patches` in the manifest).
 - [ ] The integration module is loaded with `import()` and a `.catch()`: the app works if it fails to load.
 - [ ] `appId` is unique to this application.
 - [ ] App context describes the real app (purpose, capabilities, **limits**) — nothing invented — and stays lean
@@ -48,6 +51,12 @@ lists everything. Exit code 1 when a check fails. It does not replace looking at
 - [ ] **Layout** at 1280, 1366 and 1600 px wide with the drawer open: no horizontal scrolling, side panels not
       clipped, header actions (and the toggle) visible — fix with CSS under `html.aia-drawer-open` (`frameworks.md`,
       "Layout"). No `devWarnings` layout warning in the console.
+- [ ] **Settings dialog**: open Settings on every tab in the real host app — with the app's real tools, memories
+      and screen content, and in a short window too: the tabs stay fully visible and clickable, and the layout matches
+      `settings-layout.md` (labels at the top-left of their card, inputs full width with their button flush right,
+      checkbox text right after the box, nothing centred, the runtime's own buttons). Look hardest in apps that style
+      bare `label`, `input`, `select` or `button` elements (detect lists them under "Host element rules").
+      `verify.mjs` → every `settings:<tab>` passes; no "does not match its layout spec" warning in the console.
 - [ ] Settings > Context shows exactly the intended app/page/view/snapshot text, and its size is reasonable for the
       target model (local models: at least 8k context).
 - [ ] Ask → receipt "Read the page · … · hash", flag green. Change data → flag amber. Ask → re-read (new hash).
@@ -134,7 +143,8 @@ A quick console check: `agent.getContextStatus()`, `await agent.systemPrompt()`,
 | Relay stream stops after ~60 s (504) or arrives all at once | A buffering/timeout layer: `gzip_types` includes `text/event-stream`, `fastcgi_buffering`/proxy buffering on, `mod_deflate` compressing, or a pre-1.1 relay without keepalives. See `providers.md`, "Nginx + PHP-FPM". |
 | Relay: "unable to get local issuer certificate" (cURL errno 60) | Old CA bundle (XAMPP's is from 2022) or TLS interception by antivirus/proxy. Current `cacert.pem` in `php.ini`, or `'caBundle' => 'native'` in the relay config. |
 | Every visitor hits the rate limit at once | The relay sees one address for everyone (CDN/load balancer). Restore the client address (`real_ip` in Nginx, `mod_remoteip` in Apache). |
-| Host styles leak into the drawer | Rare; all runtime classes are `aia-` prefixed. Raise specificity in the host rule or add a reset for `.aia-scope` descendants. |
+| Host styles leak into the drawer or the settings dialog (centred labels, short input rows, checkbox text far from its box, the page's button look) | The runtime's CSS is older than 1.6.1 or an edited copy without the host-isolation guard (detect: `Layout guards`): replace it, or `scripts/guards.mjs --apply`. Still there: `verify.mjs` names the host rule (an id, two classes, or `!important` can still beat the runtime); scope it away from `.aia-scope`. Never patch it with `!important` on `.aia-` classes. |
+| The settings tabs are clipped or hard to click (worst on Tools, Memory, Context) | The tab strip shrank under a tall body: a runtime CSS older than 1.6.1 (no pinned-chrome guard), or app CSS giving `.aia-tabs` a `flex-shrink`/`height`. Replace the runtime or `scripts/guards.mjs --apply`; remove the app rule. |
 | Two drawers appear | `createAiAgent` called twice (React StrictMode, HMR), or the skill was run again on an app that already had the agent and built a second one. Keep one integration (`scripts/detect.mjs` lists every `createAiAgent()` call) and a module-level singleton (`getAgent()`). |
 | Settings do not stick | Browser storage blocked (private mode / sandboxed iframe): the runtime falls back to memory for the session. |
 
@@ -152,7 +162,9 @@ From the skill folder: `node --test` (or `npm test`). No model needed.
   PHP runs when `php` (with curl) is on the PATH or `PHP_BIN` points at it; otherwise those tests are skipped.
 - `tests/browser.test.mjs` — headless Edge/Chrome (`AIA_BROWSER` to choose, `AIA_SKIP_BROWSER=1` to skip): key
   isolation, dialog docking, the layout warning, theme overrides, resume, `setControlValue`, the probe on a static
-  server, the context-size warning, the tool loop, memory end to end (remember, forget, Undo, Settings > Memory),
+  server, the context-size warning, the settings dialog under a hostile host stylesheet (every tab at two sizes, the
+  same geometry with and without it, and a leak the check and the dev warning must catch), the tool loop, memory end
+  to end (remember, forget, Undo, Settings > Memory),
   and screenshots (a WebGL `screenshot` hook, the agent asking to look, and the browser's real screen capture with the
   drawer cropped off), and attachments (the + menu with the keyboard, an image and a Word file through the file
   pickers, what the model receives, the file viewer, saved chats; drag and drop, paste, a text-only model,
@@ -164,5 +176,7 @@ From the skill folder: `node --test` (or `npm test`). No model needed.
 - `tests/example.test.mjs` — the Hello World content builders, tools and memory file (the tests every integration
   should have).
 - `tests/detect.test.mjs` — `scripts/detect.mjs` on fixture apps (fresh, current, older/edited runtime, 1.0 relay
-  edits without printing keys, workaround hints, which features are there and used, the record) and that the release
-  fingerprints are up to date.
+  edits without printing keys, workaround hints, which features are there and used, the record, the layout guards —
+  both, neither, the hand-made fix — and the host's element rules) and that the release fingerprints are up to date.
+- `tests/guards.test.mjs` — the stylesheet reader behind the layout guards (specificity, the winning declaration),
+  and `scripts/guards.mjs --apply` on an edited copy (edits kept, idempotent, CRLF kept, the manifest's `patches`).

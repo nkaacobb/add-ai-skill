@@ -27,8 +27,8 @@ It reports the runtime copy (version, and whether it is unchanged since that rel
 edits), relay config files (names only), the `createAiAgent()` call(s) with their `appId` and options, the manifest
 (`ai-enablement.json`) or the 1.x record (`ai-agent.integration.json`), capability folders and the paths they name
 that are missing, development-time folders (`.claude/` and the like — never the app's), tool config and memory files,
-and app code that looks like a workaround a newer runtime covers. Its **Features** lines are the to-do list of the
-upgrade:
+app code that looks like a workaround a newer runtime covers, and the **Layout guards** of each runtime copy's
+stylesheet (below). Its **Features** lines are the to-do list of the upgrade:
 
 ```
 Features  (in the installed runtime? · used by the integration?)
@@ -59,6 +59,49 @@ Then read, before changing anything:
   turn it into an option or config setting of the new version, or keep it as a documented patch and tell the user
   (so it can be folded back into the skill).
 - **More than one** runtime copy or `createAiAgent()` call: find which one the app really loads; plan to remove the rest.
+
+## Layout guards (every run, whatever the task)
+
+Since runtime 1.6.1 the runtime's stylesheet carries two **layout guards** for the settings dialog
+(`references/settings-layout.md`): **pinned chrome** — its header, tab strip and footer never shrink, only the body
+scrolls (before, a tall tab such as Tools clipped the tab strip behind the body) — and **host isolation** — the page's
+own element rules (`label { display: flex; justify-content: space-between }`, `button { … }`, `p`, `h2`,
+`body { text-align: center }`…) no longer reach the drawer or the dialog (before, they centred the labels, shrank the
+input rows and pushed checkbox text away from its box).
+
+Every time the skill runs on an app that already has the agent — install, upgrade, "add a tool", anything — check
+detect's `Layout guards` lines (`layoutGuards` in `--json`; `node <skill>/scripts/guards.mjs <app-root>` prints only
+these):
+
+```
+Layout guards  (ai-agent.css, runtime 1.6.1+: the settings dialog keeps its tabs and ignores host element CSS)
+  public/ai-agent/ai-agent.css  pinned chrome: MISSING · host isolation: MISSING — FIX IN THIS RUN: replace the runtime (unchanged 1.6.0 copy; references/upgrading.md, U4)
+```
+
+A guard that is MISSING is fixed **in this run**, as part of whatever the user asked for:
+
+- **Runtime unedited since a release** (detect: "unchanged copy", `fix: "replace"`): replace the runtime as in U4. That
+  is the whole runtime upgrade to the skill's version: read its CHANGELOG entries and U4's behaviour notes as for any
+  upgrade.
+- **Runtime edited** (detect: "EDITED", or an unknown release; `fix: "patch"`): apply the guard blocks to the app's
+  `ai-agent.css` in place and keep the app's other edits:
+
+  ```bash
+  node <skill>/scripts/guards.mjs <app-root> --apply
+  ```
+
+  It inserts `/* aia-guard: host-isolation */` after the theme tokens (it must come before every component rule) and
+  appends `/* aia-guard: pinned-chrome */`, only the ones missing, and records the patch in the manifest
+  (`ai-enablement.json`, or the 1.x `ai-agent.integration.json`) under `"patches"`. If the app's only edits are
+  what the guards cover (the "head, tabs and foot never shrink" rules some apps added by hand), replace the runtime
+  instead — nothing is lost. An in-place patch stops element rules and the squeezed tab strip; host rules with an
+  attribute or state (`input[type=checkbox] { margin }`, `button:hover { transform }`) are only beaten by the
+  current runtime's own rules, so reconcile the app's edits onto the new runtime when you can (U1, "Edited copies").
+
+Then tell the user in one line ("Also fixed the settings dialog: its tabs no longer clip and the page's own CSS no
+longer leaks in."), check it (`verify.mjs` → `settings:<tab>` lines; by hand, every Settings tab in the real app), and
+remove the app-side workarounds it makes redundant (U5). A fix made by hand in the stylesheet counts: detect reads its
+rules (with their specificity), not only the marker comments.
 
 ## U2. Read what changed
 
@@ -91,6 +134,17 @@ version's **Upgrading** notes. They say what to migrate and which app-side worka
 
   An embedded Node relay: update its imports to the new `relay.mjs` exports (`createRelay`, `loadConfig`).
 - **Capability folder** (if the app has one): never replaced. Validate it after the runtime is in.
+- **Framework behaviour from runtime 1.6.1** (check the app against it; every option keeps working):
+  - Every runtime CSS rule is `.aia-scope .aia-x` (specificity (0,2,0) or more). App CSS that restyles a runtime
+    class with a single class (`.aia-btn-primary { … }`) no longer wins by load order: write it
+    `.aia-scope .aia-btn-primary` (loaded after `ai-agent.css`), or better use the `--aia-*` variables. Theme
+    variables on `.aia-scope` work as before.
+  - The page's element rules (`label`, `button`, `input`, `select`, `p`, `h1`–`h6`, `section`, `header`…) no longer
+    reach the drawer or the settings dialog (`references/settings-layout.md`). An app that styled the agent through
+    them loses that styling.
+  - The settings dialog's tab strip keeps its full height on tall tabs (it used to be squeezed and clipped).
+  - `devWarnings` also checks the settings dialog against its layout spec when it opens, and warns when host CSS leaks
+    in.
 - **Framework behaviour from runtime 1.6** (check the app against it; every 1.5 option keeps working):
   - Effects `external` and `system` exist; `toolSpecs` describe them. An unknown effect still means `write` (asks
     first), as before; `validate.mjs` now reports it.
@@ -102,7 +156,7 @@ version's **Upgrading** notes. They say what to migrate and which app-side worka
   - The drawer title becomes an agent picker when there are two or more agents (`.aia-agent-pick`).
   - Saved chats keep `agent` and `skills` (older chats load as before).
   - `exportToolsConfig()` / "Download ai-tools.json" writes a new `$comment` text (the format is unchanged).
-- **Caches**: bump the version in the asset URLs (`?v=1.6.0`) or rely on `no-cache`, so browsers load the new files.
+- **Caches**: bump the version in the asset URLs (`?v=1.6.1`) or rely on `no-cache`, so browsers load the new files.
   A bundled app also gets new runtime files (`core/files.js`, `bytes.js`, `pdf.js`, `office.js`); the PDF and office
   readers are loaded with `import()`, which every bundler splits into its own chunk.
 - **Attachment behaviour from runtime 1.5** (check the app against it):
@@ -132,7 +186,8 @@ version's **Upgrading** notes. They say what to migrate and which app-side worka
 
 ## U5. Remove workarounds the new runtime covers
 
-Remove each only after checking the new behaviour covers what the app needed:
+Remove each only after checking the new behaviour covers what the app needed (for the layout entries: `verify.mjs`'s
+`settings:<tab>` checks pass with the workaround taken out):
 
 | Workaround in the app | Since | Replace with |
 | --- | --- | --- |
@@ -147,6 +202,8 @@ Remove each only after checking the new behaviour covers what the app needed:
 | "Things to remember" pasted into the system prompt or the app context; an app-side notes list for the agent | 1.3 | `ai-memory.json` + `memoryFile` (users edit them in Settings > Memory). Keep in the app context what describes the app for everyone. |
 | An app-side "send a screenshot" button, or `canvas.toDataURL()` pasted into questions | 1.3 | The camera button; the app's capture code becomes the `screenshot` hook. |
 | An app-side "send a file to the agent" button, `FileReader` code that pastes file text into `agent.ask()`, a drop handler on the drawer | 1.5 | The + button (and drag and drop, paste). A reader for a format the runtime does not read (or pdf.js the app already ships) becomes the `readFile` hook. |
+| App CSS that pins the settings dialog's frame: `flex-shrink` / `flex` on `.aia-tabs`, `.aia-modal-head`, `.aia-modal-foot`; `min-height` on `.aia-modal-body` | 1.6.1 | Nothing: the pinned-chrome guard (detect lists such rules under "Check"). |
+| App CSS that fights the host's own element rules inside the agent: `!important` on `.aia-field`, `.aia-check`, `.aia-row`, `.aia-label`, `.aia-section`, `.aia-btn`…; resets like `.aia-scope label { display: block }` | 1.6.1 | Nothing: the host-isolation guard. Restyling that is a real design choice stays, written `.aia-scope .aia-x` (U4). |
 
 Keep the layout CSS under `html.aia-drawer-open` — that is still the recipe.
 
@@ -214,8 +271,9 @@ Hello World went through exactly this (`examples/hello-world/`: `ai-tools.js` �
 ## U7. Verify, record, report
 
 1. Run the app's own tests, `node <skill>/scripts/validate.mjs <app-root>` (if there is a capability folder), then
-   `node <skill>/scripts/verify.mjs <url> [--change …]`, and check by hand what was added (SKILL.md step 14). Confirm
-   the saved chats and settings of the old version are still there (same `appId`).
+   `node <skill>/scripts/verify.mjs <url> [--change …]` (its `settings:<tab>` lines check the dialog's layout on every
+   tab), and check by hand what was added (SKILL.md step 14). Confirm the saved chats and settings of the old version
+   are still there (same `appId`).
 2. Write or update **`ai-enablement.json`** (below). An app with the 1.x record `ai-agent.integration.json`: write the
    manifest from it (keep every field the record had) and delete the record — `git` shows it as a rename.
 3. Report: versions before → after, what was replaced, migrated and removed, the features added and declined, and
@@ -230,8 +288,8 @@ refuses one that looks like it holds a key).
 ```json
 {
   "skill": "ai-enablement",
-  "skillVersion": "2.0.0",
-  "runtimeVersion": "1.6.0",
+  "skillVersion": "2.0.1",
+  "runtimeVersion": "1.6.1",
   "updated": "2026-10-02",
   "appId": "inventory",
   "framework": {
@@ -257,6 +315,7 @@ refuses one that looks like it holds a key).
     { "id": "orders", "content": "visible rows with status and totals", "tools": ["filter_orders", "open_order", "cancel_order"] }
   ],
   "customizations": ["theme via css/ai-agent-theme.css", "layout fix for .app-shell under html.aia-drawer-open"],
+  "patches": ["public/ai-agent/ai-agent.css: aia-guard host-isolation from ai-enablement 2.0.1 (runtime 1.6.1) applied in place to an edited copy (2026-10-03)"],
   "notes": "Anything the next person should know."
 }
 ```
@@ -267,5 +326,8 @@ refuses one that looks like it holds a key).
   browser's screen capture) or `vision:hook`, `attachments` (or `attachments:readFile`), `capabilities`, `agents`,
   `skills`, `workspace`, `dialogs:dock`, `relayProbe`, `codeActions`, `replyActions`. A feature the user switched off
   goes into `declined` (`"memory (memory: false)"`), so the next run does not offer it again.
+- `patches`: changes made inside a framework-owned file that is kept as an edited copy — what, from which skill
+  version, when (`scripts/guards.mjs --apply` writes its own entry). The next upgrade reads them before replacing the
+  file.
 - The 1.x record had the same fields with `"skill": "add-ai-skill"`, `"runtime"` and `"relay"` at the top level
   instead of under `framework`, and no `capabilities`; detect and validate read both.

@@ -6,6 +6,80 @@ skill's version is in `package.json`; the runtime (`VERSION` in `assets/ai-agent
 (`AIA_RELAY_VERSION` / `RELAY_VERSION`) carry their own, which only change when their code does.
 `scripts/release-hashes.json` fingerprints every released runtime and relay.
 
+## 2.0.1 — the settings dialog's layout guards (runtime 1.6.1; relays unchanged at 1.4.0)
+
+Two layout bugs in the settings dialog, fixed in the runtime and kept fixed in every app the skill touches. Found in a
+real app (an electromagnetic-field teaching lab). All 1.6 options and methods keep working.
+
+- **Clipped tabs.** The dialog's card is a flex column (header, tab strip, body, footer). The tab strip scrolls
+  sideways, so its automatic minimum height is 0, and on a tall tab the layout took height from it as well as from
+  the body: at 1920×910 the 45px strip was 23px on Tools, 29px on Context, 35px on Memory, the tabs clipped behind the
+  body and hard to click. It happened on any page, host CSS or not.
+- **Host CSS in the dialog.** The page's global `label { display: flex; justify-content: space-between; … }` centred
+  the uppercase labels, shrank each input + button row to its content (the model input cut to "Leave empty to use
+  whate…") and pushed "Remember API keys" away from its checkbox. Bare `button`, `input`, `select`, `p`, `h2`,
+  `body { text-align: center }`, `* { box-sizing: content-box }` rules did the same kind of damage.
+
+### Runtime 1.6.1
+
+- `ai-agent.css`, `/* aia-guard: pinned-chrome */`: the dialog's header, tab strip and footer never shrink
+  (`flex-shrink: 0`); the body takes what is left (`min-height: 0`) and is the only part that scrolls. The drawer's
+  own flex columns (header, context bar, saved chats, messages, composer, the file viewer) state the same.
+- `ai-agent.css`, `/* aia-guard: host-isolation */`, right after the theme tokens: inside `.aia-scope`, every element
+  the runtime renders is reverted to the browser's own styles (`all: revert`, at specificity (0,1,0)), so the page's
+  rules on bare elements no longer apply; `svg`/`img` are left out (their presentation attributes) and the icons'
+  paint is restated. Custom properties (the theme) and `[hidden]` are unaffected.
+- Every other runtime rule is now `.aia-scope .aia-x` — (0,2,0) or more, with their relative order unchanged — so a
+  host rule with a class, attribute or state (`input[type=number]`, `button:hover { transform }`, `.dark label`)
+  does not win either, and the rules state the layout properties they depend on (`.aia-field`: `align-items:
+  stretch; justify-content: flex-start; text-align: left`; every button: margin, font, transform, shadow…). No new
+  `!important`; no Shadow DOM.
+- The layout spec is written above the modal rules and in `references/settings-layout.md`.
+- Nothing else looks different. On a page without host CSS, every element of the drawer (messages, Markdown, tool
+  rows, the + menu, saved chats) has the same geometry as in 1.6.0, and its computed styles differ only in equivalent
+  keywords (`normal` → `stretch`); in the dialog, the tab strip keeps its full height (what is below it moves down
+  accordingly) and a checkbox's text box spans its row (the text stays where it was). Button font sizes and weights
+  that a `font: inherit` rule had always overridden were removed rather than switched on, so buttons keep their look.
+- Dev-time (`devWarnings`, `ui/layout-check.js`): when the settings dialog opens, and on each tab, its computed styles
+  are compared with the spec (`.aia-field` `align-items` not `stretch`, `.aia-check` `justify-content` not
+  `flex-start`, a squeezed tab strip…), and a console warning names the element and says that host CSS is leaking in.
+  It never changes the page.
+
+### Skill
+
+- **Every run on an app that has the agent checks the guards** (SKILL.md, step 0; `references/upgrading.md`, "Layout
+  guards"): a missing guard is fixed in that run, whatever the task — an unchanged runtime is replaced (U4), an
+  edited one gets the guard blocks in place with the new `scripts/guards.mjs --apply` (its other edits kept, the
+  patch recorded under `patches` in the manifest) — and the user is told in one line.
+- `scripts/detect.mjs`: `layoutGuards` per runtime copy (`pinnedChrome` — read from the stylesheet's rules with their
+  specificity, so a hand-made fix counts; `hostIsolation`), with what to do; the host's own global element rules
+  (`label`, `input`, `select`, `textarea`, `button`, `p`, `h1`–`h6`, `body` text-align) from its CSS files and inline
+  `<style>` blocks, for information (`hostRules`); app CSS that the guards make redundant among the hints. In the
+  summary and in `--json`.
+- `scripts/verify.mjs`: a `settings:<tab>` check per visible tab at 1920×1080 and 1280×600 (`--settings-sizes`) — the
+  tab strip whole and inside the card, the footer and Save inside the card, labels at their card's left edge, input
+  rows full width with the input at least half, checkbox text within 12px of its box, nothing centred — naming the
+  element and the host rule that decides the value; screenshots `settings-<tab>.png`.
+- `references/settings-layout.md` (new): the spec, how the CSS holds it, restyling from the app, how it is checked.
+  Updated: `upgrading.md` (Layout guards, U4, U5, the manifest's `patches`), `checklist.md`, `architecture.md`,
+  `api.md`.
+- Tests: the settings dialog under `tests/fixtures/hostile-host/hostile.css` (every rule above and more) with 29
+  tools, 30 memories and a long screen, every tab at both sizes, identical geometry with and without the host
+  stylesheet, and a deliberate leak the check and the dev warning must catch (`tests/browser.test.mjs`); detect on a
+  runtime with both guards, with neither and with the hand-made fix, and the host rules (`tests/detect.test.mjs`);
+  the stylesheet reader and `--apply` (`tests/guards.test.mjs`). `tests/fixtures/hostile-host/index.html` is the same
+  page for `verify.mjs` (`?rules=off` for the control run).
+
+### Upgrading from 2.0.0 / runtime 1.6.0
+
+1. Re-copy `assets/ai-agent/` (an edited copy: `node <skill>/scripts/guards.mjs <app-root> --apply`). The relays are
+   unchanged. Bump `?v=` in the asset URLs.
+2. Behaviour to know about (`references/upgrading.md`, U4): app CSS that restyles a runtime class with a single class
+   (`.aia-btn-primary { … }`) no longer wins by load order — write `.aia-scope .aia-btn-primary`, or use the
+   `--aia-*` variables; the page's element rules no longer style the agent's UI.
+3. Remove app-side workarounds the guards cover (U5): `flex-shrink` on `.aia-tabs`, `!important` on `.aia-field`,
+   `.aia-check`, `.aia-row`… once `verify.mjs` passes without them.
+
 ## 2.0.0 — AI Enablement: tools, toolsets, skills, agents, permissions, lifecycle, in-app authoring (runtime 1.6.0; relays unchanged at 1.4.0)
 
 The skill is now **ai-enablement**. It still builds the agent drawer into an app, and it now manages the app's whole

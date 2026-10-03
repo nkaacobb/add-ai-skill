@@ -13,7 +13,8 @@
 //   warnings  a tool module that only imports in the browser (verify.mjs checks those in a real browser); files in
 //             the capability folder the index does not name (the runtime will not load them); a file a skill links
 //             to that is missing; tool config entries for tools that do not exist; the 1.x record instead of the
-//             manifest; a manifest whose versions or paths no longer match
+//             manifest; a manifest whose versions or paths no longer match; a runtime stylesheet without its layout
+//             guards (scripts/guards.mjs)
 // Exit code: 1 when there are errors, else 0.
 
 import fs from 'node:fs';
@@ -176,6 +177,9 @@ export async function validate(target) {
       }
     }
     for (const rt of d.runtimes) if (rt.known && (rt.modified.length || rt.missing.length)) app.warnings.push(`The runtime copy ${rt.dir} differs from release ${rt.version} (${[...rt.modified, ...rt.missing].join(', ')}): framework files are copied unchanged; reconcile the edit (references/upgrading.md, U1).`);
+    for (const g of d.layoutGuards || []) {
+      if (g.missing.length) app.warnings.push(`${g.css} lacks the layout guard${g.missing.length > 1 ? 's' : ''} ${g.missing.join(' and ')} (the settings dialog's tabs clip, host CSS leaks in): ${g.fix === 'replace' ? 'replace the runtime (references/upgrading.md, U4)' : 'node <skill>/scripts/guards.mjs <app-root> --apply'} in this run (references/upgrading.md, "Layout guards").`);
+    }
   }
   const errors = results.reduce((n, r) => n + r.errors.length, 0) + app.errors.length;
   return { root, skill: skillInfo().skillVersion, indexes: results, app, ok: errors === 0 };

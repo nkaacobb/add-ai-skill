@@ -12,6 +12,7 @@
 //   --agent <expression>  how to reach the agent object (default: window.agent || window.aiAgent); optional
 //   --hotkey <combo>      default ctrl+i
 //   --widths 1280,1366,1600   layout widths to check (a screenshot per width)
+//   --settings-sizes 1920x1080,1280x600   window sizes for the settings check
 //   --out <dir>           screenshots and report.json (default: ./.verify)
 //   --browser <path>      browser executable (default: Edge/Chrome found on this machine, or $AIA_BROWSER)
 //   --headed              show the browser window
@@ -30,6 +31,11 @@
 //   vision      takes one screenshot the way the camera button does: the app's hook, or the browser's screen capture
 //   attachments the + button opens its menu (Attach an image · Upload a file); a small text file attaches as text
 //   layout@W    at each width: no horizontal overflow, nothing under the drawer, the toggle still visible
+//   settings:T  every visible Settings tab at 1920x1080 and 1280x600 (references/settings-layout.md): the tab strip
+//               whole and inside the card, the footer and Save inside the card, labels at the left of their card,
+//               input rows full width (the input at least half), checkbox text right after the box, nothing centred;
+//               a failure names the element and the host CSS rule that probably caused it. Screenshots:
+//               settings-<tab>.png (1920x1080) and settings-<tab>-1280x600.png
 //   ask         "Read the page" receipt, flag synced                                         (needs a model)
 //   change      after --change the flag turns "dirty"; the next question re-reads the page  (needs a model)
 //   unchanged   asking again without changes says "Page unchanged"                         (needs a model)
@@ -37,6 +43,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { launchBrowser, sleep } from './lib/cdp.mjs';
+import { checkSettingsLayout, formatProblem, SETTINGS_SIZES } from './lib/settings-layout.mjs';
 
 const argv = process.argv.slice(2);
 const has = (name) => argv.includes(`--${name}`);
@@ -46,7 +53,8 @@ const opt = (name, fallback) => {
 };
 const url = argv.find((a, i) => !a.startsWith('--') && (i === 0 || !argv[i - 1].startsWith('--') || ['no-llm', 'headed'].includes(argv[i - 1].slice(2))));
 if (!url || has('help')) {
-  console.log(fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 30).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+  const lines = fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n');
+  console.log(lines.slice(1, lines.findIndex((l, i) => i > 0 && !l.startsWith('//'))).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
   process.exit(url ? 0 : 1);
 }
 
@@ -58,6 +66,7 @@ const O = {
   agent: opt('agent', 'window.agent || window.aiAgent'),
   hotkey: opt('hotkey', 'ctrl+i'),
   widths: opt('widths', '1280,1366,1600').split(',').map(Number).filter((n) => n > 0),
+  settingsSizes: opt('settings-sizes', SETTINGS_SIZES.map((s) => s.join('x')).join(',')).split(',').map((s) => s.split('x').map(Number)).filter((s) => s[0] > 0 && s[1] > 0),
   out: path.resolve(opt('out', '.verify')),
   browser: opt('browser', ''),
   headed: has('headed'),
@@ -312,6 +321,21 @@ async function main() {
         ...L.toggles.filter((t) => !t.visible).map((t) => `toggle ${t.label} hidden under the drawer`),
       ];
       record(`layout@${w}`, problems.length ? 'fail' : 'pass', `${problems.length ? problems.join('; ') : 'fits beside the drawer'} (screenshot ${path.relative(process.cwd(), file)})`);
+    }
+    await page.viewport(O.widths[0] || 1366, 900);
+
+    // The settings dialog's layout, on every visible tab (references/settings-layout.md).
+    const settings = await checkSettingsLayout(page, { agent: O.agent, out: O.out, sizes: O.settingsSizes });
+    if (settings.length === 1 && settings[0].error) {
+      record('settings', 'skip', settings[0].error);
+    } else {
+      for (const tab of [...new Set(settings.map((r) => r.tab))]) {
+        const runs = settings.filter((r) => r.tab === tab);
+        const problems = runs.flatMap((r) => (r.error ? [{ text: r.error }] : r.problems).map((p) => formatProblem(r, p)));
+        const shots = runs.map((r) => r.screenshot).filter(Boolean).map((f) => path.relative(process.cwd(), f)).join(', ');
+        const m = runs.find((r) => r.metrics)?.metrics;
+        record(`settings:${tab}`, problems.length ? 'fail' : 'pass', `${problems.length ? problems.join(' | ').slice(0, 1600) : `${runs.map((r) => r.size).join(' and ')}: tab strip whole (${m?.tabs}px), labels left, rows full width, checkbox text by its box, nothing centred${m?.overflows ? '; the body scrolls' : ''}`} (screenshots ${shots})`);
+      }
     }
     await page.viewport(O.widths[0] || 1366, 900);
 

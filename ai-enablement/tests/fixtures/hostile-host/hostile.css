@@ -1,0 +1,52 @@
+/* A hostile host stylesheet: global element rules that real apps ship and that used to leak into the agent's
+   settings dialog and drawer. The runtime must look the same with and without this file (runtime 1.6.1+,
+   ai-agent.css "aia-guard: host-isolation"). Used by tests/browser.test.mjs and by
+   tests/fixtures/hostile-host/index.html (scripts/verify.mjs).
+
+   The first rule is the one from the electromagnetic-field teaching lab that centred the settings labels, shrank the
+   input rows and pushed checkbox text to the far right. */
+
+label { display: flex; justify-content: space-between; align-items: center; gap: .85rem; color: #9aa; font-size: .92rem; }
+
+/* Buttons: a gradient, a 12px radius, padding, shouty type, and a jump on hover. */
+button {
+  margin: 6px;
+  padding: 12px 22px;
+  font: italic 700 16px/2 Georgia, serif;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  text-align: right;
+  color: #300;
+  background: linear-gradient(135deg, #ff7ad9, #7af0ff);
+  border: 3px solid #301;
+  border-radius: 12px;
+  box-shadow: 0 5px 0 #301;
+}
+button:hover { transform: translateY(-3px) scale(1.04); background: linear-gradient(135deg, #fffb7a, #ff7a7a); color: #fff; box-shadow: 0 8px 0 #301; }
+button:active { transform: translateY(2px); }
+
+select, input[type=number] { width: 100%; padding: 12px; background: #ffe9c7; border: 3px solid #f80; border-radius: 14px; }
+input { width: 160px; margin: 8px; font: 18px "Comic Sans MS", cursive; text-align: center; }
+input[type=checkbox], input[type=radio] { width: 26px; height: 26px; margin: 0 14px; }
+textarea { width: 300px; height: 60px; margin: 10px; padding: 20px; font-family: "Comic Sans MS", cursive; border: 4px dashed #0a0; resize: none; }
+
+body { text-align: center; }
+p { margin: 1.4em 0; font-size: 19px; line-height: 2; }
+h1, h2, h3, h4 { margin: 1.2em 0; font-size: 32px; text-transform: uppercase; letter-spacing: .2em; }
+* { box-sizing: content-box; }
+
+/* Structure and text that apps style globally. */
+header, footer { display: grid; place-items: center; padding: 22px; background: #123; color: #fff; }
+aside { padding: 30px; margin: 12px; background: #fdf; }
+section { max-width: 380px; margin: 30px auto; padding: 24px; border: 2px dotted #c0c; }
+div { line-height: 1.9; }
+span { letter-spacing: .06em; }
+form { margin: 24px; padding: 16px; border: 2px solid #f0f; }
+ul, ol { margin: 2em; padding-left: 4em; list-style: square; }
+li { margin: .8em 0; }
+pre, code { font-family: "Courier New", monospace; font-size: 17px; background: #ff0; }
+details, summary { padding: 10px; background: #eef; text-align: center; }
+a { color: #e0f; text-decoration: none; font-weight: 900; }
+small { font-size: 18px; }
+label::after { content: " :"; }
+::placeholder { color: #f00; font-style: italic; }

@@ -1,9 +1,9 @@
 {
   "$comment": "AI Enablement manifest: what the skill installed in this app and what the app owns. Written at the end of every run of the skill; committed with the app; never secrets. Format: references/upgrading.md, 'The manifest'.",
   "skill": "ai-enablement",
-  "skillVersion": "2.0.0",
-  "runtimeVersion": "1.6.0",
-  "updated": "2026-10-02",
+  "skillVersion": "2.0.1",
+  "runtimeVersion": "1.6.1",
+  "updated": "2026-10-03",
   "appId": "hello-world",
   "framework": {
     "runtime": "../../assets/ai-agent",

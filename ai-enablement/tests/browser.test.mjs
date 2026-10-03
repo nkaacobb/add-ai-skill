@@ -1,7 +1,8 @@
 // Runtime behaviour that only a real browser can show: keyboard isolation from host shortcuts, native modal
 // dialogs, the push-layout warning, theme overrides, resume, form controls, the relay probe, the context size, the
 // tool loop, tool rows (a cut-off call rolled down and copied), memory, screenshots (an app hook with a WebGL
-// canvas, and the browser's own screen capture), and attachments (the + menu, drag and drop, paste, a browser-made PDF).
+// canvas, and the browser's own screen capture), attachments (the + menu, drag and drop, paste, a browser-made PDF),
+// and the settings dialog's layout under a hostile host stylesheet (tests/fixtures/hostile-host/hostile.css).
 // Runs headless Edge/Chrome/Chromium over the DevTools protocol (scripts/lib/cdp.mjs, Node 22+). Skipped when no
 // browser is installed; set AIA_BROWSER to a browser executable to choose one, or AIA_SKIP_BROWSER=1 to skip.
 
@@ -10,6 +11,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launchBrowser, serveStatic, findBrowser, sleep } from '../scripts/lib/cdp.mjs';
+import { checkSettingsLayout, SETTINGS_SIZES } from '../scripts/lib/settings-layout.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const skip = process.env.AIA_SKIP_BROWSER ? 'AIA_SKIP_BROWSER is set'
@@ -513,6 +515,106 @@ test('Settings > Context shows the estimated tokens and warns for local models a
   assert.match(big.text, /8k/);
   await page.evaluate(() => { agent.setContent(() => 'small'); document.querySelector('.aia-modal [data-tab="agent"]').click(); document.querySelector('.aia-modal [data-tab="context"]').click(); });
   assert.equal((await read()).warn, false);
+});
+
+/* ------------------------------------------------------------------------- settings layout (host CSS) */
+
+/** The harness with the hostile host stylesheet loaded after the runtime's (ties go to the host), extra CSS after
+ *  that, and the hostile fixture's agent: 29 tools, 30 memories, a long screen, so every tab overflows its body. */
+async function hostileAgent({ hostile = true, css = '', options = {} } = {}) {
+  await fresh();
+  await page.evaluate(async (o) => {
+    if (o.hostile) {
+      await new Promise((res) => { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = '/tests/fixtures/hostile-host/hostile.css'; l.onload = res; document.head.append(l); });
+    }
+    if (o.css) document.head.insertAdjacentHTML('beforeend', `<style>${o.css}</style>`);
+    const { mountHostileAgent } = await import('/tests/fixtures/hostile-host/app.js');
+    window.agent = mountHostileAgent({ launcher: false, devWarnings: true, ...o.options });
+    await agent.ready;
+  }, { hostile, css, options });
+  page.console.length = 0;
+}
+
+/** Evaluated in the page: the geometry and the styles that show, of every element of the dialog's card (or the drawer). */
+const GEOMETRY = (selector) => {
+  const root = document.querySelector(selector);
+  const base = root.getBoundingClientRect();
+  return [...root.querySelectorAll('*')].filter((el) => el.getClientRects().length).map((el) => {
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    return `${el.tagName}.${el.className?.baseVal ?? el.className} ${[r.x - base.x, r.y - base.y, r.width, r.height].map(Math.round).join(',')} ${cs.fontSize} ${cs.fontWeight} ${cs.fontFamily} ${cs.color} ${cs.backgroundColor} ${cs.textAlign} ${cs.textTransform} ${cs.letterSpacing} ${cs.fill} ${cs.stroke}`;
+  });
+};
+
+async function uiGeometry() {
+  const out = {};
+  await page.viewport(1280, 600);
+  for (const tab of ['model', 'agent', 'tools', 'memory', 'vision', 'context']) {
+    await page.evaluate((t) => agent.openSettings(t), tab);
+    await sleep(tab === 'context' ? 500 : 300);
+    out[tab] = await page.evaluate(GEOMETRY, '.aia-modal:not([hidden]) .aia-modal-card');
+    await page.evaluate(() => document.querySelector('.aia-modal:not([hidden]) [data-act="close"]').click());
+  }
+  await page.evaluate(() => agent.open());
+  await sleep(450);
+  out.drawer = await page.evaluate(GEOMETRY, '.aia-drawer');
+  return out;
+}
+
+test('settings layout: every tab keeps its spec under a hostile host stylesheet (1920x1080, 1280x600), and looks as it does without it', { skip, timeout: 180000 }, async () => {
+  await hostileAgent();
+  const results = await checkSettingsLayout(page, { agent: 'window.agent' });
+  const tabs = ['model', 'agent', 'tools', 'memory', 'vision', 'context'];
+  assert.deepEqual([...new Set(results.map((r) => r.tab))], tabs, 'every tab, in their fixed order');
+  assert.deepEqual([...new Set(results.map((r) => r.size))], SETTINGS_SIZES.map((s) => s.join('x')));
+  for (const r of results) assert.deepEqual(r.problems.map((p) => `${p.element}: ${p.text} — ${p.culprit}`), [], `${r.size} ${r.tab}`);
+  for (const r of results.filter((x) => x.size === '1280x600')) {
+    assert.equal(r.metrics.overflows, true, `${r.tab}: the body overflows at 1280x600 (what used to squeeze the tab strip)`);
+    assert.equal(r.metrics.tabs, r.metrics.tabsNeed, `${r.tab}: the tab strip keeps its full height`);
+  }
+  assert.equal(page.console.filter((c) => /does not match its layout spec/.test(c.text)).length, 0, 'no dev-time layout warning');
+
+  // The guard leaves alone what it must: [hidden] (a hidden tab collapses), the dark theme, the icons' paint.
+  await hostileAgent({ options: { memory: false, theme: 'dark' } });
+  const dark = await page.evaluate(() => {
+    agent.openSettings('model');
+    const m = document.querySelector('.aia-modal:not([hidden])');
+    const icon = m.querySelector('.aia-modal-head .aia-icon-btn svg');
+    return { memoryTab: getComputedStyle(m.querySelector('[data-tab="memory"]')).display, card: getComputedStyle(m.querySelector('.aia-modal-card')).backgroundColor,
+      fill: getComputedStyle(icon).fill, stroke: getComputedStyle(icon).stroke, iconWidth: getComputedStyle(icon).width };
+  });
+  assert.deepEqual(dark, { memoryTab: 'none', card: 'rgb(23, 33, 49)', fill: 'none', stroke: 'rgb(157, 171, 192)', iconWidth: '17px' });
+
+  // Identical geometry and styles with and without the host's stylesheet: the dialog on every tab, and the drawer.
+  await hostileAgent();
+  const withHost = await uiGeometry();
+  await hostileAgent({ hostile: false });
+  const without = await uiGeometry();
+  for (const k of Object.keys(without)) assert.deepEqual(withHost[k], without[k], `${k}: host CSS changed the runtime's UI`);
+  assert.deepEqual(page.errors(), []);
+});
+
+test('settings layout check: it catches a squeezed tab strip and host CSS leaking in, names the rule, and the dev warning says so', { skip, timeout: 120000 }, async () => {
+  // What 1.6.0 looked like under the lab app's `label { … }` rule: tabs that shrink, centred labels, checkbox text far
+  // from its box. Written here as later, stronger rules, so the check has something to find.
+  const leak = `.aia-scope .aia-tabs.aia-tabs { flex-shrink: 1; }
+    .aia-scope label.aia-field, .aia-scope label.aia-check { align-items: center; justify-content: space-between; }
+    .aia-scope label.aia-check > span { flex: none; }
+    .aia-scope .aia-note.aia-note { text-align: center; }`;
+  await hostileAgent({ css: leak });
+  const results = await checkSettingsLayout(page, { agent: 'window.agent', sizes: [[1280, 600]] });
+  const all = results.flatMap((r) => r.problems.map((p) => ({ ...p, tab: r.tab })));
+  const kinds = new Set(all.map((p) => p.kind));
+  for (const k of ['tabs', 'tab', 'label', 'row', 'check', 'center']) assert.ok(kinds.has(k), `reports "${k}" problems (got ${[...kinds]})`);
+  const tools = results.find((r) => r.tab === 'tools');
+  assert.ok(tools.metrics.tabs < tools.metrics.tabsNeed, 'the Tools tab squeezes the strip again');
+  assert.match(all.find((p) => p.kind === 'check').culprit, /label\.aia-check \{ justify-content: space-between \} \(an inline <style>\)/, 'names the rule behind it');
+  assert.match(all.find((p) => p.kind === 'center').culprit, /text-align: center/);
+  const warned = page.console.filter((c) => c.level === 'warning' && /does not match its layout spec/.test(c.text));
+  assert.ok(warned.length >= 1, 'the dev-time check warns');
+  assert.match(warned[0].text, /label\.aia-field has align-items: center/);
+  assert.match(warned[0].text, /tab strip is \d+px tall but its tabs need/);
+  assert.match(warned[0].text, /Host CSS is leaking/);
 });
 
 /* ------------------------------------------------------------------------------------------ memory */

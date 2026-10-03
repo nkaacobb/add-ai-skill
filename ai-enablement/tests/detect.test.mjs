@@ -210,3 +210,110 @@ test('detect: a relay is compared with the skill\'s own relay version, not the r
   assert.equal(r.relays[0].unchanged, true);
   assert.equal(r.status, 'current', 'the current relay (its own version) is not an upgrade, whatever the runtime version is');
 });
+
+/* ------------------------------------------------------------------------------------------ layout guards */
+
+const GUARD_BLOCKS = /\/\* aia-guard: (pinned-chrome|host-isolation)[\s\S]*?\/\* end aia-guard: \1 \*\/\n?/g;
+const unguarded = () => fs.readFileSync(path.join(RUNTIME, 'ai-agent.css'), 'utf8').replace(GUARD_BLOCKS, '');
+// The fix one app added to its runtime's ai-agent.css by hand before 1.6.1 (no marker comment).
+const HAND_MADE = `
+/* Head, tabs and foot never shrink: only the body scrolls. */
+.aia-modal-head, .aia-tabs, .aia-modal-foot { flex-shrink: 0; }
+.aia-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px; scrollbar-width: thin; }
+`;
+
+test('detect: layoutGuards — a runtime with both guards, one with neither, and one with the hand-made fix', () => {
+  const both = app();
+  copyRuntime(both, 'public/ai-agent');
+  write(both, 'public/js/setup.js', INTEGRATION);
+  const g = detect(both).layoutGuards;
+  assert.equal(g.length, 1);
+  assert.deepEqual([g[0].dir, g[0].css, g[0].version], ['public/ai-agent', 'public/ai-agent/ai-agent.css', skillInfo().runtimeVersion]);
+  assert.deepEqual([g[0].pinnedChrome, g[0].hostIsolation, g[0].missing, g[0].fix], [true, true, [], null]);
+  assert.deepEqual(g[0].markers, ['pinned-chrome', 'host-isolation']);
+
+  const neither = app();
+  copyRuntime(neither, 'public/ai-agent');
+  write(neither, 'public/ai-agent/ai-agent.css', unguarded());
+  write(neither, 'public/js/setup.js', INTEGRATION);
+  const n = detect(neither).layoutGuards[0];
+  assert.deepEqual([n.pinnedChrome, n.hostIsolation, n.missing, n.fix], [false, false, ['pinned-chrome', 'host-isolation'], 'patch'], 'an edited copy is patched in place');
+  assert.deepEqual(n.details.flexShrink, { 'aia-modal-head': '1', 'aia-tabs': '1', 'aia-modal-foot': '1' });
+
+  const hand = app();
+  copyRuntime(hand, 'public/ai-agent');
+  write(hand, 'public/ai-agent/ai-agent.css', unguarded() + HAND_MADE);
+  write(hand, 'public/js/setup.js', INTEGRATION);
+  const h = detect(hand).layoutGuards[0];
+  assert.deepEqual([h.pinnedChrome, h.hostIsolation, h.missing], [true, false, ['host-isolation']], 'the hand-made Bug 1 CSS counts as pinned chrome');
+  assert.deepEqual(h.details, { flexShrink: { 'aia-modal-head': '0', 'aia-tabs': '0', 'aia-modal-foot': '0' }, bodyMinHeight: '0' });
+
+  // Weaker or conditional rules do not count: a later, more specific `flex: 1` on .aia-tabs, or the fix in a media query.
+  const weak = app();
+  copyRuntime(weak, 'public/ai-agent');
+  write(weak, 'public/ai-agent/ai-agent.css', `${unguarded()}${HAND_MADE}.aia-scope .aia-tabs { flex: 1; }\n`);
+  assert.equal(detect(weak).layoutGuards[0].pinnedChrome, false, 'a stronger flex: 1 wins');
+  write(weak, 'public/ai-agent/ai-agent.css', `${unguarded()}@media (min-width: 900px) {${HAND_MADE}}\n`);
+  assert.equal(detect(weak).layoutGuards[0].pinnedChrome, false, 'only on wide screens is not pinned');
+});
+
+test('detect: an unchanged release without the guards is replaced, an edited one patched; the summary says so', async () => {
+  // An unchanged copy of a release that predates the guards (as 1.6.0 did), fingerprinted as that release.
+  const root = app();
+  copyRuntime(root, 'public/ai-agent', (t) => t.replace(/export const VERSION = '[^']+'/, "export const VERSION = '1.6.0'"));
+  write(root, 'public/ai-agent/ai-agent.css', unguarded());
+  write(root, 'public/js/setup.js', INTEGRATION);
+  const { normalizedHash } = await import('../scripts/detect.mjs');
+  const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)]));
+  const dir = path.join(root, 'public', 'ai-agent');
+  const runtime = Object.fromEntries(walk(dir).map((f) => [path.relative(dir, f).split(path.sep).join('/'), normalizedHash(fs.readFileSync(f, 'utf8'))]));
+  const info = skillInfo();
+  const r = detect(root, { ...info, releases: { ...info.releases, '1.6.0': { runtime, relay: {} } } });
+  assert.equal(r.status, 'upgrade');
+  assert.deepEqual([r.layoutGuards[0].fix, r.layoutGuards[0].missing], ['replace', ['pinned-chrome', 'host-isolation']]);
+
+  // The human summary (the CLI, with the real fingerprints: this copy is not the real 1.6.0, so it is patched).
+  const { execFileSync } = await import('node:child_process');
+  const out = execFileSync(process.execPath, [path.join(SKILL, 'scripts', 'detect.mjs'), root], { encoding: 'utf8' });
+  assert.match(out, /Layout guards/);
+  assert.match(out, /public\/ai-agent\/ai-agent\.css {2}pinned chrome: MISSING · host isolation: MISSING — FIX IN THIS RUN: node <skill>\/scripts\/guards\.mjs <app-root> --apply/);
+  assert.match(out, /Layout guards missing in public\/ai-agent\/ai-agent\.css: fix them in this run, whatever the task/);
+  const json = JSON.parse(execFileSync(process.execPath, [path.join(SKILL, 'scripts', 'detect.mjs'), root, '--json'], { encoding: 'utf8' }));
+  assert.equal(json.layoutGuards[0].hostIsolation, false);
+  assert.ok(Array.isArray(json.hostRules));
+});
+
+test('detect: the host\'s global element rules (CSS files and inline <style>), and app CSS the guards make redundant', () => {
+  const root = app();
+  copyRuntime(root, 'public/ai-agent');
+  write(root, 'public/js/setup.js', INTEGRATION);
+  write(root, 'public/css/app.css', `/* the lab */
+label { display: flex; justify-content: space-between; align-items: center; gap: .85rem; color: #9aa; font-size: .92rem; }
+.panel label { color: red; }
+body { margin: 0; text-align: center; }
+body.dark input[type=number], select { width: 100%; }
+button:hover { transform: translateY(-1px); }
+button.primary { background: blue; }
+@media (max-width: 600px) { p { margin: 0; } }
+.aia-tabs { flex-shrink: 0; }
+.aia-scope .aia-field { align-items: stretch !important; }
+`);
+  write(root, 'public/index.html', '<html><head><style>\n  h2 { margin: 2em 0 }\n</style></head><body></body></html>');
+  write(root, 'src/Panel.vue', '<template><label>x</label></template><style scoped>label { display: block }</style>');
+  write(root, 'tests/fixture.css', 'label { color: red }');
+  const r = detect(root);
+  const rules = r.hostRules.map((h) => `${h.file}:${h.line} ${h.selector} {${h.props.join(',')}}${h.media ? ` ${h.media}` : ''}`).sort();
+  assert.deepEqual(rules, [
+    'public/css/app.css:2 label {display,justify-content,align-items,gap,color,font-size}',
+    'public/css/app.css:4 body {text-align: center}',
+    'public/css/app.css:5 body.dark input[type=number] {width}',
+    'public/css/app.css:5 select {width}',
+    'public/css/app.css:6 button:hover {transform}',
+    'public/css/app.css:8 p {margin} @media (max-width: 600px)',
+    'public/index.html <style>:2 h2 {margin}',
+  ], '.panel label, button.primary, scoped Vue styles and test files are not global element rules');
+  const hints = r.hints.filter((h) => /guard/.test(h.hint)).map((h) => `${h.file}: ${h.hint}`);
+  assert.equal(hints.length, 2);
+  assert.match(hints[0], /^public\/css\/app\.css:9: \.aia-tabs sets flex-shrink: 0: the runtime's pinned-chrome guard/);
+  assert.match(hints[1], /^public\/css\/app\.css:10: \.aia-scope \.aia-field overrides the settings dialog with !important \(align-items\)/);
+});

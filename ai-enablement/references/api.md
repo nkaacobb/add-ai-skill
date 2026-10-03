@@ -33,7 +33,7 @@ automatically.
 | `debounceMaxMs` | `1000` | While `contextChanged()` keeps being called (animation, simulation, live data), refresh the flag at least this often anyway. `0` = plain debounce (1.0 behaviour: the flag waits until the changes stop). |
 | `isolateKeys` | `true` | Keystrokes typed in the drawer and the settings modal do not reach the host page's bubbling key listeners, so host shortcuts (Space = play, letters, arrows) cannot swallow them. Ctrl/Cmd application shortcuts (Ctrl+S…) still reach the host; text-editing combos (Ctrl+A/C/V/X/Z/Y, Ctrl+arrows) stay in the field. |
 | `dialogs` | `false` | `'dock'`: native modal `<dialog>`s (which make the drawer inert) are shown non-modally beside the open drawer and become modal again when it closes, without firing `close`/`toggle` at the host. `{ selector: 'dialog.x' }` manages only some. See `frameworks.md` ("Modal dialogs"). |
-| `devWarnings` | `'auto'` | Console warnings for integration problems: the pushed layout overflows/hides things under the drawer (checked after opening and on resize), a modal dialog makes the drawer inert. `'auto'` = on for `localhost`, `127.x`, `[::1]`, `*.localhost`, `*.test`, `*.local`, `file:`; `true`/`false` force. |
+| `devWarnings` | `'auto'` | Console warnings for integration problems: the pushed layout overflows/hides things under the drawer (checked after opening and on resize), a modal dialog makes the drawer inert, the settings dialog does not match its layout spec (host CSS leaking in; checked when it opens and per tab — `settings-layout.md`). `'auto'` = on for `localhost`, `127.x`, `[::1]`, `*.localhost`, `*.test`, `*.local`, `file:`; `true`/`false` force. |
 | `relayProbe` | `false` | `true` (probe `defaults.relayUrl`), a URL, or `{ url, timeoutMs = 2500 }`: GET the relay at startup; if it answers `available`, use it (with its preset provider/model), else send requests directly. See "Relay probe". |
 | `contextWarnTokens` | `3000` | Settings > Context warns (local providers) when the first request is estimated above this. |
 | `tools` | `[]` | Tools given inline: `[{ name, title?, description, parameters? \| inputSchema?, effect?: 'read'\|'write'\|'destructive'\|'external'\|'system', annotations?, pages?, when?, group?, enabled?, timeoutMs?, run(args, { host, agent, signal, call }) }]`, toolsets (`{ name, title, description, tools }`), or `(host) => that list`. Added to the capability index's (inline wins). Invalid definitions are skipped with a console error. |
@@ -284,3 +284,7 @@ Supported host hooks (stable across versions):
 | `[data-aia-ignore]` | Host elements `fromDom` skips. |
 
 Set the badge variables on the toggle itself or any ancestor (`:root`). All runtime classes start with `aia-`.
+
+The page's own element rules (`label`, `button`, `input`, `p`, `h2`, `body { text-align }`…) do not reach the drawer or
+the settings dialog (runtime 1.6.1, `settings-layout.md`). Every runtime rule is `.aia-scope .aia-x`; to restyle one
+from the app, use the same form in a stylesheet loaded after `ai-agent.css` (`.aia-scope .aia-btn-primary { … }`).

@@ -17,6 +17,7 @@ import { toolEnabled, toolAvailable, exportToolsConfig } from '../core/tools.js'
 import { decidePermission } from '../core/permissions.js';
 import { exportMemoryFile, parseMemoryFile, memoryText, nextId, MEMORY_LIMITS } from '../core/memory.js';
 import { formatWhen } from './dom.js';
+import { checkSettingsLayout, SETTINGS_HELP } from './layout-check.js';
 
 /** Above this many estimated tokens (system prompt + snapshot + view state), Settings > Context warns for local models. */
 export const CONTEXT_WARN_TOKENS = 3000;
@@ -29,7 +30,7 @@ const STATE_TEXT = {
   off: 'Screen sharing is switched off (Agent tab).',
 };
 
-export function createSettingsPanel({ store, defaultPrompt, getContextInfo, relayHeaders, theme = 'auto', mount = document.body, title = 'AI agent', isolate = true, warnTokens = CONTEXT_WARN_TOKENS, relayInfo = () => null, getTools = () => [], pageId = () => null, memory = null, vision = () => null, attachments = true, getPolicy = () => null, getCapabilities = () => null }) {
+export function createSettingsPanel({ store, defaultPrompt, getContextInfo, relayHeaders, theme = 'auto', mount = document.body, title = 'AI agent', isolate = true, warnTokens = CONTEXT_WARN_TOKENS, relayInfo = () => null, getTools = () => [], pageId = () => null, memory = null, vision = () => null, attachments = true, getPolicy = () => null, getCapabilities = () => null, devWarnings = false }) {
   const memLimits = memory?.limits || MEMORY_LIMITS;
   const id = uid('aia');
   const root = h(`
@@ -668,6 +669,20 @@ export function createSettingsPanel({ store, defaultPrompt, getContextInfo, rela
     act('save').hidden = name === 'context';
     act('resetAll').hidden = name === 'context';
     if (name === 'context') renderContext();
+    if (devWarnings) setTimeout(checkLayout, 0);
+  }
+
+  /** Dev-time (devWarnings): does the open tab still match the layout spec, or is host CSS leaking in? */
+  const layoutWarned = new Set();
+  function checkLayout() {
+    if (!isOpen()) return;
+    let problems;
+    try { ({ problems } = checkSettingsLayout(root)); } catch { return; }
+    if (!problems.length) return;
+    const key = problems.map((p) => p.text).join('|');
+    if (layoutWarned.has(key)) return;
+    layoutWarned.add(key);
+    console.warn(`[ai-agent] The settings dialog (${currentTab} tab) does not match its layout spec:\n- ${problems.map((p) => p.text).join('\n- ')}\n\n${SETTINGS_HELP}`, ...problems.map((p) => p.element));
   }
 
   /* ------------------------------------------------------------ open/close */

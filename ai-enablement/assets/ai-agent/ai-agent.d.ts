@@ -472,8 +472,8 @@ export interface AiAgentOptions {
    */
   dialogs?: false | 'dock' | { mode?: 'dock'; selector?: string };
   /**
-   * Dev-time console warnings: the pushed layout overflows or hides elements under the drawer, or a modal dialog
-   * makes the drawer inert. 'auto' (default) = on for localhost, 127.x, *.localhost, *.test, *.local and file:.
+   * Dev-time console warnings: the pushed layout overflows or hides elements under the drawer, a modal dialog
+   * makes the drawer inert, or the settings dialog does not match its layout spec (host CSS leaking in). 'auto' (default) = on for localhost, 127.x, *.localhost, *.test, *.local and file:.
    */
   devWarnings?: boolean | 'auto';
   /**

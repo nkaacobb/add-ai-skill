@@ -53,7 +53,7 @@ export { parseSkill } from './core/skills.js';
 export { parseAgent } from './core/agents.js';
 export { parseFrontmatter } from './core/frontmatter.js';
 
-export const VERSION = '1.6.0';
+export const VERSION = '1.6.1';
 
 /** Skills that ship with the runtime (in its skills/ folder) and when they are offered. */
 const BUILTIN_SKILLS = [{ folder: 'create-tool', when: 'workspace' }];
@@ -273,7 +273,7 @@ export function createAiAgent(options = {}) {
   let panel = null;
   panel = createSettingsPanel({
     store, defaultPrompt, getContextInfo, relayHeaders: o.relayHeaders, theme: o.theme, title: o.title, mount: o.mount,
-    isolate: o.isolateKeys !== false, warnTokens: o.contextWarnTokens, relayInfo: () => relay,
+    isolate: o.isolateKeys !== false, warnTokens: o.contextWarnTokens, relayInfo: () => relay, devWarnings: o.devWarnings,
     getTools: () => toolRegistry.all(), pageId: () => ctx.page?.id,
     getPolicy: () => (drawer ? drawer.policy() : capabilities.policy()),
     getCapabilities: () => (drawer ? drawer.capabilityInfo() : null),
