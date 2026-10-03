@@ -1,4 +1,4 @@
-# AI Enablement — an application's AI layer, as a reusable skill
+## AI Enablement — an application's AI layer, as a reusable skill
 
 <p align="center">
   <img src="skill-overview.png" alt="AI Enablement skill overview" width="1000">
